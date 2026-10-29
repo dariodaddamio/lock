@@ -58,7 +58,7 @@ expect "write whole file over region" deny "$(j '{"cwd":"ROOT","tool_name":"Writ
 expect "multiedit touching region" deny "$(j '{"cwd":"ROOT","tool_name":"MultiEdit","tool_input":{"file_path":"ROOT/src/app.ts","edits":[{"old_string":"free = 1","new_string":"free = 3"},{"old_string":"ship.","new_string":"pay."}]}}')"
 expect "whole-file lock write" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/catalog.json","content":"{}"}}')"
 expect "write approval record" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.locks/approvals/x.json","content":"{}"}}')"
-expect "add file lock" allow "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.locks/files.json","content":"{ \u0022files\u0022: [\u0022catalog.json\u0022, \u0022other.json\u0022] }"}}')"
+expect "add file lock" allow "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.locks/files.json","content":"{ \u0022files\u0022: [\u0022catalog.json\u0022\u002c \u0022other.json\u0022] }"}}')"
 expect "drop file lock" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.locks/files.json","content":"{ \u0022files\u0022: [] }"}}')"
 expect "new lock added by agent" allow "$(j '{"cwd":"ROOT","tool_name":"Edit","tool_input":{"file_path":"ROOT/src/app.ts","old_string":"export const free = 1;","new_string":"// LOCKED: free START\nexport const free = 1;\n// LOCKED: free END"}}')"
 expect "unrelated file" allow "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/src/new.ts","content":"x"}}')"
