@@ -3,15 +3,16 @@
 [![CI](https://github.com/dariodaddamio/lock/actions/workflows/ci.yml/badge.svg)](https://github.com/dariodaddamio/lock/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-`lock` prevents coding agents from changing the parts of your repository that you
-already decided on.
+`lock` prevents coding agents from being able to change parts of your repo that
+must not be changed.
 
-Coding agents often change text and code that a person already approved, such as
-final copy, a released changelog entry, or a tuned animation. Instructions in a
-prompt or in `AGENTS.md` do not stop this, because the agent can ignore them or
-forget them in a long session. `lock` puts the decision in the repository itself.
-You put `LOCKED` comments around a region, and the agent cannot change that region
-until a person approves the exact change.
+When you settle on the copy for a landing page, a released changelog entry, or the
+timing of an animation, you want it to stay that way. A coding agent does not know
+that you made that decision. It improves whatever looks improvable, and a rule in
+`AGENTS.md` is easy for it to forget in a long session. `lock` puts the decision in
+the repository itself. You put `LOCKED` comments around the region, and from then
+on the agent's edit is refused before it touches the file, until you approve that
+exact change.
 
 ```text
 > Change the tagline to "Ship faster."
@@ -26,118 +27,74 @@ until a person approves the exact change.
   `lock approve pricing-copy` in your terminal, and I will retry the edit.
 ```
 
-## Contents
+## At a glance
 
-- [How it works](#how-it-works)
-- [Install](#install)
-- [Lock a region](#lock-a-region)
-- [Approve a change](#approve-a-change)
-- [Supported agents](#supported-agents)
-- [Commands](#commands)
-- [Limits](#limits)
-- [Questions](#questions)
-- [Contributing](#contributing)
+| | |
+| --- | --- |
+| Agents | Claude Code, Codex, and Cursor block the edit as it happens. Other agents are caught at commit time and in CI. |
+| Platforms | macOS (Apple silicon and Intel), Linux (x64 and ARM64), and Windows (x64 and ARM64) |
+| File types | Most code, style, markup, and config files, listed below. Any other file can be locked as a whole. |
+| Install | One command. `lock` is a single binary with no runtime, and it needs only git. |
+| Speed | About 50 ms for each check, so the agent does not slow down. |
 
-## How it works
+### Supported file types
 
-`lock` has three layers, and each layer catches what the layer before it cannot
-see.
-
-```mermaid
-flowchart LR
-    A[Agent asks to edit a file] --> H{lock hook}
-    H -- locked region stays the same --> W[The edit runs]
-    H -- locked region changes --> D[The edit is blocked]
-    D --> P[A person runs lock approve]
-    P --> R[The agent retries the same edit]
-    R --> H
-    W --> C{Commit hook and CI}
-    C -- all changes approved --> M[Merge]
-    C -- change not approved --> F[Fail]
-```
-
-The first layer is the agent hook. Before each file edit, the agent runs
-`lock hook`, which reads the file and applies the proposed edit in memory. If a
-locked region is different after the edit, the hook blocks the tool call, so the
-file on disk does not change. The hook also blocks shell commands that can write
-to a locked file, such as `sed -i`, `mv`, `rm`, or a `>` redirect. If `lock` is
-not installed or does not work, the hook blocks the edit and does not let it
-through.
-
-The second layer is the approval. When the hook blocks an edit, it keeps the
-proposed change in `.git/lock/`. A person runs `lock approve`, reads the diff,
-and accepts or rejects it. If the person accepts it, `lock` writes an approval
-record to `.locks/approvals/`, and the agent can then make that exact edit.
-
-The third layer is the git backstop. `lock check --staged` runs before each
-commit, and `lock check --base <ref>` runs in CI. Both compare each lock with
-the last commit and fail if a locked region changed without an approval. This
-catches changes that did not go through an agent tool, for example a manual edit
-or a commit with `--no-verify`.
+| File types | Write the markers as |
+| --- | --- |
+| JavaScript, TypeScript, JSX, TSX, CSS, SCSS, Less | `/* */`, `//`, or `{/* */}` in JSX |
+| Rust, Go, Java, Kotlin, Swift, C, C++, C#, PHP, Scala, Dart, Zig | `/* */` or `//` |
+| Markdown, MDX, HTML, SVG, XML | `<!-- -->` |
+| Vue, Svelte, Astro | Any of the above |
+| Python, Ruby, shell, PowerShell, YAML, TOML, Terraform, Nix | `#` |
+| SQL, Lua, Haskell, Elm | `--` |
+| Any other file, such as JSON or an image | A whole-file lock in `.locks/files.json` |
 
 ## Install
 
-1. Download the binary for your system from the
-   [releases page](https://github.com/dariodaddamio/lock/releases). Put the
-   binary in a directory that is on your `PATH`. If you have Rust, you can build it instead:
+Install the binary with one command.
 
-   ```sh
-   cargo install --git https://github.com/dariodaddamio/lock --locked
-   ```
+On macOS and Linux, and in Git Bash on Windows:
 
-2. In the root directory of your repository, run this command:
+```sh
+curl -fsSL https://raw.githubusercontent.com/dariodaddamio/lock/main/install.sh | sh
+```
 
-   ```sh
-   lock install
-   ```
+On Windows, in PowerShell:
 
-   This command adds the agent hook to `.claude/settings.json`,
-   `.codex/hooks.json`, and `.cursor/hooks.json`. It also adds `lock check
-   --staged` to the git pre-commit hook. To install only some of the hooks, use
-   `--git`, `--claude`, `--codex`, or `--cursor`.
+```powershell
+irm https://raw.githubusercontent.com/dariodaddamio/lock/main/install.ps1 | iex
+```
 
-3. Commit the agent settings files, so that each clone of the repository gets
-   the agent hook. The pre-commit hook is in `.git`, which git does not commit,
-   so each clone must run `lock install` one time. A `prepare` script in
-   `package.json` can do this automatically.
+Then, in the root of each repository that you want to protect, run:
 
-4. Add the CI check to a workflow, so that each pull request and each push to
-   the main branch is checked:
+```sh
+lock install
+```
 
-   ```yaml
-   name: Locks
-   on:
-     pull_request:
-     push:
-       branches: [main]
-   jobs:
-     locks:
-       runs-on: ubuntu-latest
-       steps:
-         - uses: actions/checkout@v4
-           with:
-             fetch-depth: 0
-         - uses: dariodaddamio/lock@v0.1.0
-   ```
+That is all the setup a single developer needs. If you prefer to build from
+source, run `cargo install --git https://github.com/dariodaddamio/lock --locked`,
+or download an archive from the
+[releases page](https://github.com/dariodaddamio/lock/releases).
 
-5. Make sure that a person must review each approval before it gets to the main
-   branch. In the branch protection rule for the main branch, turn on **Require review
-   from Code Owners**. Then add these lines to `.github/CODEOWNERS`:
+`lock install` adds the hook to each agent and to git. Run it again at any time;
+it does not add a hook twice.
 
-   ```text
-   /.locks/                 @your-handle
-   /.claude/settings.json   @your-handle
-   /.codex/hooks.json       @your-handle
-   /.cursor/hooks.json      @your-handle
-   /.github/workflows/      @your-handle
-   ```
+| File | What `lock install` adds |
+| --- | --- |
+| `.claude/settings.json` | A `PreToolUse` hook that checks each Claude Code edit and shell command |
+| `.codex/hooks.json` | The same hook for Codex |
+| `.cursor/hooks.json` | The same hook for Cursor |
+| `.git/hooks/pre-commit` | `lock check --staged`, which stops a commit that changes a lock without approval |
+
+Commit the three agent files, so that every clone of the repository gets the
+hook. The git hook is not committed, so each clone runs `lock install` once. In a
+JavaScript project, a `"prepare": "lock install"` script in `package.json` does
+this on every `npm install`, on any machine that has `lock` installed.
 
 ## Lock a region
 
-Put a `START` marker before the region and an `END` marker after it. Write each
-marker as a comment in the language of the file, at the start of its own line.
-The id contains only lowercase letters, digits, and hyphens, and it must be
-unique in the file. You can write a note after `START` or `END`.
+Put a `START` marker on the line before the region and an `END` marker on the
+line after it:
 
 ```ts
 /* LOCKED: pricing-copy START - approved by design on 2026-10-30 */
@@ -151,130 +108,177 @@ export const tagline = "Pay for what you ship.";
 <!-- LOCKED: release-history END -->
 ```
 
-| File types | Marker comment |
-| --- | --- |
-| JavaScript, TypeScript, CSS, Rust, Go, Java, C, C#, Swift, Kotlin, PHP | `/*`, `//`, or `{/*` in JSX |
-| Markdown, MDX, HTML, SVG, XML | `<!--` |
-| Vue, Svelte, Astro | All of the above |
-| Python, Ruby, shell, PowerShell, YAML, TOML | `#` |
-| SQL, Lua, Haskell | `--` |
+A few rules keep the markers unambiguous:
 
-A marker in a fenced code block in Markdown is an example, so it does not lock
-anything. If a `START` marker has no `END` marker, or if one region is inside
-another region, `lock` reports an error. Until a person corrects the markers, the hook blocks
-all edits to that file.
+- Each marker is a comment at the start of its own line.
+- The id uses lowercase letters, digits, and hyphens, and it is unique in its file.
+- Text after `START` or `END` is a note for people, and `lock` ignores it.
+- Regions cannot be inside other regions.
+- A marker inside a fenced code block in Markdown is an example, so it does not lock anything.
 
-To lock a file that cannot contain comments, such as a JSON file or an image,
-add its path to `.locks/files.json`:
+To lock a file that cannot hold a comment, add its path to `.locks/files.json`:
 
 ```json
 { "files": ["public/catalog.json"] }
 ```
 
-An agent can add a lock without approval, because a new lock only adds
-protection. A change to an existing lock, or the removal of a lock, needs an
-approval.
+An agent may add a lock on its own, because a new lock only adds protection.
+Changing or removing an existing lock always needs your approval. If a marker is
+broken, for example a `START` without an `END`, the hook refuses all edits to that
+file until a person fixes the markers.
 
 ## Approve a change
 
-When the hook blocks an edit that you want, open a terminal in the repository
-and run `lock approve`. For each blocked change, `lock` shows the diff of the
-locked region and asks you to type `APPROVE <id>`. When you type it, `lock`
-writes a record to `.locks/approvals/`, and you tell the agent to retry. Commit
-the record together with the change.
+When the agent proposes a change to a locked region that you do want, approve it
+like this:
 
-An approval permits one exact change and not a period of time. The record
-contains a hash of the locked region before the change and a hash of the region
-after the change. When the agent retries, the hook calculates the same two
-hashes, and it lets the edit through only if they match a record. If the agent
-writes different text, even one different character, the hook blocks the edit
-again.
+1. Open a terminal in the repository. This must be your own terminal window, not
+   a command that you run through the agent.
+2. Run `lock approve`. For each blocked change, `lock` shows the diff of the
+   locked region.
+3. Type `APPROVE <id>` to accept the change, or press Enter to skip it.
+4. Tell the agent to retry. The same edit now goes through.
+5. Commit the new file in `.locks/approvals/` together with the change.
 
-An approval does not expire, but it cannot unlock the region again after the
-change. When you commit the change, the new content becomes the locked content,
-and the next change needs a new approval. The old record stays in
-`.locks/approvals/` as history, and it matches only when the region contains the
-old content again. The region can get back to the old content only through a
-second approval, so the old record cannot open the region by itself.
+### How long an approval lasts
 
-If you approve a change and the agent does not make it, the record still permits
-that exact change later. To cancel an approval that nobody used, delete its file
-from `.locks/approvals/`.
+An approval is for one exact change, not for a period of time.
 
-If you approve two changes to the same region before you commit, for example A
-to B and then B to C, the commit check accepts the change from A to C because
-the records connect A to C.
+- The approval record stores a fingerprint of the region before the change and a
+  fingerprint of the region after the change.
+- The agent's retry goes through only if it produces exactly the approved text. If
+  one character is different, the hook refuses it again.
+- After you commit the change, the new text becomes the locked text, and the next
+  change needs a new approval.
+- The old record stays in `.locks/approvals/` as history. It cannot open the region
+  again, because it only matches the old text, and the region can only get back to
+  the old text through another approval.
+- An approval that nobody used stays valid for that one change. To cancel it,
+  delete its file from `.locks/approvals/`.
+- If you approve two changes in a row before you commit, for example from A to B
+  and then from B to C, the commit check accepts the change from A to C.
 
-## Supported agents
+## How it works
 
-| Agent | How `lock` checks it |
-| --- | --- |
-| Claude Code | `PreToolUse` hook for `Edit`, `MultiEdit`, `Write`, `NotebookEdit`, `Bash`, and `PowerShell` |
-| Codex | `PreToolUse` hook for `apply_patch`, file edits, and shell commands. `lock` applies each patch in memory. |
-| Cursor | `preToolUse` hook for file edits, and `beforeShellExecution` for shell commands |
-| Other agents | The commit hook and the CI check. These do not block the edit, but they stop the change before it gets to the main branch. |
+`lock` checks a change at three points, and each point catches what the one
+before it cannot see.
 
-To add an agent, see [Contributing](#contributing).
+| Layer | When it runs | What it stops |
+| --- | --- | --- |
+| Agent hook | Before each agent edit or shell command | An agent edit that changes a locked region, a shell command that could write to a locked file, an agent that tries to approve its own change, and an edit that removes the hook |
+| Commit hook | Before each `git commit` | A commit with a locked change that has no approval, for example a manual edit |
+| CI check | On each pull request and push | Everything above, including a commit made with `--no-verify` |
+
+The agent hook does the real work. When an agent asks to edit a file, the hook
+reads the file, applies the edit in memory, and compares each locked region before
+and after. It replays Claude Code and Cursor edits and Codex patches the same way.
+If a region changes and there is no approval for that exact change, the hook
+refuses the tool call, keeps the proposed change for `lock approve`, and tells the
+agent why. If `lock` is not installed or fails, the hook refuses the edit instead
+of letting it through.
+
+```mermaid
+flowchart LR
+    A[Agent asks to edit a file] --> H{lock hook}
+    H -- locked region stays the same --> W[The edit runs]
+    H -- locked region changes --> D[The edit is refused]
+    D --> P[You run lock approve]
+    P --> R[The agent retries the same edit]
+    R --> H
+    W --> C{Commit hook and CI}
+    C -- every change approved --> M[Merge]
+    C -- a change without approval --> F[Fail]
+```
+
+## Set up a team repository
+
+For a repository that other people or a CI system use, add two things.
+
+First, run the check on every pull request and on each push to the main branch:
+
+```yaml
+name: Locks
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  locks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dariodaddamio/lock@v0.1.0
+```
+
+Second, make sure that a person reviews every approval before it reaches the main
+branch. In the branch protection rule for the main branch, turn on **Require
+review from Code Owners**. Then add these lines to `.github/CODEOWNERS`:
+
+```text
+/.locks/                 @your-handle
+/.claude/settings.json   @your-handle
+/.codex/hooks.json       @your-handle
+/.cursor/hooks.json      @your-handle
+/.github/workflows/      @your-handle
+```
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `lock hook claude` | Reads one Claude Code tool call on stdin and allows it or blocks it. |
-| `lock hook codex` | Does the same for Codex. |
-| `lock hook cursor` | Does the same for Cursor. |
-| `lock approve [<id> or <path>...] [--reason <text>]` | Shows each blocked or unapproved change and records the changes that you accept. |
+| `lock install [--git] [--claude] [--codex] [--cursor]` | Adds the hooks to this clone. With no options, it adds all of them. |
+| `lock approve [<id> or <path>...] [--reason <text>]` | Shows each blocked or unapproved change and records the ones that you accept. |
+| `lock list` | Shows every lock in the working tree. |
 | `lock check` | Compares the working tree with `HEAD`. |
-| `lock check --staged` | Compares the staged files with `HEAD`. The pre-commit hook runs this command. |
-| `lock check --base <ref>` | Compares `HEAD` with the commit where it branched from `<ref>`. CI runs this command. |
-| `lock list` | Shows all locks in the working tree. |
-| `lock install [--git] [--claude] [--codex] [--cursor]` | Adds the hooks to this clone. |
+| `lock check --staged` | Compares the staged files with `HEAD`. The commit hook runs this. |
+| `lock check --base <ref>` | Compares `HEAD` with the point where it branched from `<ref>`. CI runs this. |
+| `lock hook claude`, `lock hook codex`, `lock hook cursor` | The agent hook. Each agent runs it with one tool call on stdin. |
 
 ## Limits
 
-The hook sees each file edit before it runs, so it blocks file edits reliably.
-A shell command is different, because the hook reads only the text of the
-command. A command that makes a file name while it runs, or a script that writes
-files, can get past the hook. The commit hook and the CI check find these
-changes, and `git commit --no-verify` does not skip the CI check.
+The agent hook sees every file edit before it happens, so file edits cannot get
+past it. Shell commands are harder, because the hook can only read the text of the
+command. A script that writes files, or a command that builds a file name while it
+runs, can get past the hook. The commit hook and the CI check catch those changes.
 
-An approval record is a plain file, so a person can write one by hand. The hook
+An approval record is a plain file, so someone could write one by hand. The hook
 does not let an agent write to `.locks/`, and `lock approve` does not run for an
-agent, but the guarantee on the main branch comes from code owner review of
-`.locks/`. Without that review, use `lock` as a strong guard against agent
-mistakes and not as a security boundary.
+agent. On the main branch, the guarantee comes from code owner review of
+`.locks/`. Without that review, treat `lock` as a strong guard against agent
+mistakes rather than as a security boundary.
 
 ## Questions
 
-### Why must I run `lock approve` in my own terminal?
+### Why does `lock approve` need my own terminal?
 
-`lock approve` runs only when its input and output are an interactive terminal
-and the `CI` variable is not set. An agent runs commands through pipes and not
-through a terminal, so an agent cannot approve its own change. The hook also
-blocks any agent command that contains `lock approve`. For the same reason, a
-command that you start through the agent, such as `! lock approve` in Claude
-Code, does not work. Open a separate terminal window for approvals.
+An approval must come from a person. `lock approve` only runs when a person is
+typing into an interactive terminal, and it does not run when the `CI` variable is
+set. Agents run their commands through pipes, without a keyboard, so `lock
+approve` refuses them. The hook also refuses any agent command that runs `lock
+approve`. A command that you start through the agent, such as `! lock approve` in
+Claude Code, goes through the same pipe, so it is refused too.
 
-### Can I lock a whole file?
+### Does an approval unlock the region?
 
-Yes. Add the path to `.locks/files.json`. This works for any file, including a
-file that cannot contain comments.
+No. It permits one exact change, and the region stays locked. See
+[How long an approval lasts](#how-long-an-approval-lasts).
 
-### Does `lock` slow down the agent?
+### What if I want to remove a lock?
 
-No. The hook is one small binary, and each check takes approximately 50 ms. The
-hook runs `git` only for shell commands that can write files.
+Delete the markers, then run `lock approve`. Removing a lock is a change to the
+lock, so it needs an approval like any other change.
 
-### What happens if I remove a lock?
+### Which agents can I add?
 
-A removal is a change to the lock, so it needs an approval. `lock approve` shows
-the removal as a diff, and the record permits only that removal.
+Any agent with a hook that runs before a tool call. Open an issue with an example
+of the JSON that the agent sends to its hook.
 
 ## Contributing
 
-Bug reports, ideas, and pull requests are welcome. If you want `lock` to support
-another agent, open an issue that shows the JSON that the agent sends to its
-hooks. To run the checks, build the binary and run the scenario script:
+Bug reports, ideas, and pull requests are welcome. To build `lock` and run the
+checks:
 
 ```sh
 cargo build --release
