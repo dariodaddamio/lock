@@ -6,14 +6,14 @@
 `lock` prevents coding agents from being able to change parts of your repo that
 must not be changed.
 
+![An agent tries to change a locked tagline, lock blocks the edit, the person approves the exact change, and the retry goes through](docs/lock-demo.gif)
+
 Some parts of a project are settled: the copy on a landing page, a released
 changelog entry, or the timing of an animation. A coding agent cannot tell which
 parts those are, so it improves whatever looks improvable. A rule in `AGENTS.md`
 does not stop it either, because an agent can forget a rule in a long session.
 With `lock`, you tell your agent which parts are settled. From then on, the agent
 cannot change them unless you approve the exact change.
-
-![Claude Code tries to edit a locked tagline, and the lock hook blocks the edit](docs/blocked-edit.svg)
 
 ## What lock is
 
@@ -96,14 +96,28 @@ of four things:
 
 When you edit locked text yourself, the commit shows what `lock` recorded:
 
-![git commit records a hand edit to locked text as an approval](docs/hand-edit.svg)
+```console
+$ git commit -am "Tweak the tagline"
+lock: recorded your edit to src/pricing.ts :: pricing-copy in .locks/approvals/pricing-copy.e2a33e.540703c0ed6d.json.
+[main 76ebfec] Tweak the tagline
+```
 
 ## What the agent sees
 
 ### An edit
 
-When an agent edits a file, the agent sends the hook the exact text it wants to
-replace. This is the edit from the image at the top:
+When an agent edits a file, it sends the hook the exact text that it wants to
+replace. `lock` applies the edit to a copy of the file in memory and compares each
+locked region before and after. If a region would change and there is no approval
+for that change, `lock` refuses the tool call, so the file is never written. An
+edit to the same file outside the locked region goes through as usual.
+
+![The agent's edit replaces the locked tagline, and the file on disk stays unchanged](docs/edit-before-after.svg)
+
+<details>
+<summary>The tool call and the answer from <code>lock</code></summary>
+
+The agent sends:
 
 ```json
 {
@@ -116,9 +130,7 @@ replace. This is the edit from the image at the top:
 }
 ```
 
-`lock` applies the edit to a copy of the file in memory and compares each locked
-region before and after. Here the `pricing-copy` region would change and there is
-no approval for that change, so `lock` refuses the tool call:
+`lock` answers:
 
 ```json
 {
@@ -130,26 +142,17 @@ no approval for that change, so `lock` refuses the tool call:
 }
 ```
 
-The agent never writes to the file. An edit to the same file outside the locked
-region goes through as usual.
+</details>
 
 ### A shell command or a script
 
 `lock` cannot know in advance what a script will write, so it checks the result
 instead. Before the command runs, `lock` copies each file that holds a lock. After
 the command, it compares the files with the copies and puts back any locked text
-that changed without approval. All other changes stay.
+that changed without approval. All other changes stay, and the agent is told what
+was put back.
 
-![A script rewrites a locked tagline, and lock puts the tagline back](docs/script-put-back.svg)
-
-In this example, the script changed two lines of `src/pricing.ts`, and only one
-of them was locked:
-
-| | `plans`, not locked | `tagline`, locked |
-| --- | --- | --- |
-| Before the command | `["Hobby", "Pro", "Team"]` | `"Pay for what you ship."` |
-| What the script wrote | `["Hobby", "Pro", "Team", "Enterprise"]` | `"Ship faster."` |
-| After the check | `["Hobby", "Pro", "Team", "Enterprise"]` | `"Pay for what you ship."` |
+![A script changes an unlocked line and a locked line, and lock keeps the first change and puts back the second](docs/script-before-after.svg)
 
 The same check undoes a command that writes an approval record, edits the lock
 configuration, or removes the hook from the agent settings.
@@ -157,9 +160,7 @@ configuration, or removes the hook from the agent settings.
 ## Approve a change
 
 When the agent proposes a change to locked text that you do want, run
-`lock approve` in your own terminal:
-
-![lock approve shows the diff of the locked region and records the approval](docs/approve.svg)
+`lock approve` in your own terminal, as in the animation at the top:
 
 1. `lock approve` shows each change that was blocked, as a diff of the locked
    region.
@@ -301,6 +302,15 @@ person can still write one by hand. On the main branch, code owner review of
 `.locks/` makes sure that a person accepted each record.
 
 ## Questions
+
+### Why not a rule in `AGENTS.md`?
+
+| Approach | What it misses |
+| --- | --- |
+| A rule in `AGENTS.md` or `CLAUDE.md` | The agent can forget the rule, or decide that it does not apply. |
+| Read-only file permissions | They protect whole files only, and an agent can change the permissions back. |
+| Code owner review | It finds the change in review, after the agent has made it. |
+| `lock` | It stops the change at the tool call, for any part of a file, and checks again at commit and in CI. |
 
 ### Why does `lock approve` need my own terminal?
 
