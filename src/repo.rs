@@ -51,7 +51,7 @@ pub enum View {
 
 impl View {
     /// Paths that mention `LOCKED:`, found with `git grep` so large repositories stay fast.
-    fn marked(&self, root: &Path) -> Vec<String> {
+    pub fn marked(&self, root: &Path) -> Vec<String> {
         let mut args = vec!["grep", "-l", "-I", "-F", "-e", "LOCKED:"];
         match self {
             View::Worktree => args.push("--untracked"),

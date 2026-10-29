@@ -1,0 +1,115 @@
+<svg class="rich-terminal" viewBox="0 0 1242 391.59999999999997" xmlns="http://www.w3.org/2000/svg">
+    <!-- Generated with Rich https://www.textualize.io -->
+    <style>
+
+    @font-face {
+        font-family: "Fira Code";
+        src: local("FiraCode-Regular"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff2/FiraCode-Regular.woff2") format("woff2"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff/FiraCode-Regular.woff") format("woff");
+        font-style: normal;
+        font-weight: 400;
+    }
+    @font-face {
+        font-family: "Fira Code";
+        src: local("FiraCode-Bold"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff2/FiraCode-Bold.woff2") format("woff2"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff/FiraCode-Bold.woff") format("woff");
+        font-style: bold;
+        font-weight: 700;
+    }
+
+    .terminal-4165939858-matrix {
+        font-family: Fira Code, monospace;
+        font-size: 20px;
+        line-height: 24.4px;
+        font-variant-east-asian: full-width;
+    }
+
+    .terminal-4165939858-title {
+        font-size: 18px;
+        font-weight: bold;
+        font-family: arial;
+    }
+
+    .terminal-4165939858-r1 { fill: #dcdfe4;font-weight: bold }
+.terminal-4165939858-r2 { fill: #dcdfe4 }
+.terminal-4165939858-r3 { fill: #7dc88c }
+.terminal-4165939858-r4 { fill: #6e7480 }
+.terminal-4165939858-r5 { fill: #f07178 }
+.terminal-4165939858-r6 { fill: #5abec8 }
+    </style>
+
+    <defs>
+    <clipPath id="terminal-4165939858-clip-terminal">
+      <rect x="0" y="0" width="1223.0" height="340.59999999999997" />
+    </clipPath>
+    <clipPath id="terminal-4165939858-line-0">
+    <rect x="0" y="1.5" width="1224" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-4165939858-line-1">
+    <rect x="0" y="25.9" width="1224" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-4165939858-line-2">
+    <rect x="0" y="50.3" width="1224" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-4165939858-line-3">
+    <rect x="0" y="74.7" width="1224" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-4165939858-line-4">
+    <rect x="0" y="99.1" width="1224" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-4165939858-line-5">
+    <rect x="0" y="123.5" width="1224" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-4165939858-line-6">
+    <rect x="0" y="147.9" width="1224" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-4165939858-line-7">
+    <rect x="0" y="172.3" width="1224" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-4165939858-line-8">
+    <rect x="0" y="196.7" width="1224" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-4165939858-line-9">
+    <rect x="0" y="221.1" width="1224" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-4165939858-line-10">
+    <rect x="0" y="245.5" width="1224" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-4165939858-line-11">
+    <rect x="0" y="269.9" width="1224" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-4165939858-line-12">
+    <rect x="0" y="294.3" width="1224" height="24.65"/>
+            </clipPath>
+    </defs>
+
+    <rect fill="#16181d" stroke="rgba(255,255,255,0.35)" stroke-width="1" x="1" y="1" width="1240" height="389.6" rx="8"/><text class="terminal-4165939858-title" fill="#dcdfe4" text-anchor="middle" x="620" y="27">Claude&#160;Code&#160;·&#160;an&#160;edit&#160;to&#160;locked&#160;text&#160;is&#160;blocked</text>
+            <g transform="translate(26,22)">
+            <circle cx="0" cy="0" r="7" fill="#ff5f57"/>
+            <circle cx="22" cy="0" r="7" fill="#febc2e"/>
+            <circle cx="44" cy="0" r="7" fill="#28c840"/>
+            </g>
+        
+    <g transform="translate(9, 41)" clip-path="url(#terminal-4165939858-clip-terminal)">
+    
+    <g class="terminal-4165939858-matrix">
+    <text class="terminal-4165939858-r1" x="0" y="20" textLength="672" clip-path="url(#terminal-4165939858-line-0)">&gt;&#160;Change&#160;the&#160;tagline&#160;in&#160;src/pricing.ts&#160;to&#160;&quot;Ship&#160;faster.&quot;</text><text class="terminal-4165939858-r2" x="1224" y="20" textLength="12" clip-path="url(#terminal-4165939858-line-0)">
+</text><text class="terminal-4165939858-r2" x="1224" y="44.4" textLength="12" clip-path="url(#terminal-4165939858-line-1)">
+</text><text class="terminal-4165939858-r3" x="0" y="68.8" textLength="12" clip-path="url(#terminal-4165939858-line-2)">●</text><text class="terminal-4165939858-r1" x="24" y="68.8" textLength="48" clip-path="url(#terminal-4165939858-line-2)">Edit</text><text class="terminal-4165939858-r2" x="72" y="68.8" textLength="192" clip-path="url(#terminal-4165939858-line-2)">(src/pricing.ts)</text><text class="terminal-4165939858-r2" x="1224" y="68.8" textLength="12" clip-path="url(#terminal-4165939858-line-2)">
+</text><text class="terminal-4165939858-r4" x="24" y="93.2" textLength="12" clip-path="url(#terminal-4165939858-line-3)">⎿</text><text class="terminal-4165939858-r5" x="60" y="93.2" textLength="924" clip-path="url(#terminal-4165939858-line-3)">PreToolUse:Edit&#160;hook&#160;error:&#160;lock:&#160;src/pricing.ts&#160;has&#160;locked&#160;regions&#160;that&#160;this</text><text class="terminal-4165939858-r2" x="1224" y="93.2" textLength="12" clip-path="url(#terminal-4165939858-line-3)">
+</text><text class="terminal-4165939858-r5" x="0" y="117.6" textLength="996" clip-path="url(#terminal-4165939858-line-4)">&#160;&#160;&#160;&#160;&#160;tool&#160;call&#160;would&#160;change&#160;or&#160;remove:&#160;`pricing-copy`.&#160;Nothing&#160;was&#160;written.&#160;If&#160;this</text><text class="terminal-4165939858-r2" x="1224" y="117.6" textLength="12" clip-path="url(#terminal-4165939858-line-4)">
+</text><text class="terminal-4165939858-r5" x="0" y="142" textLength="996" clip-path="url(#terminal-4165939858-line-5)">&#160;&#160;&#160;&#160;&#160;change&#160;is&#160;wanted,&#160;ask&#160;the&#160;user&#160;to&#160;run&#160;`lock&#160;approve&#160;pricing-copy`&#160;in&#160;their&#160;own</text><text class="terminal-4165939858-r2" x="1224" y="142" textLength="12" clip-path="url(#terminal-4165939858-line-5)">
+</text><text class="terminal-4165939858-r5" x="0" y="166.4" textLength="828" clip-path="url(#terminal-4165939858-line-6)">&#160;&#160;&#160;&#160;&#160;terminal,&#160;then&#160;retry&#160;the&#160;same&#160;edit.&#160;Do&#160;not&#160;work&#160;around&#160;the&#160;lock.</text><text class="terminal-4165939858-r2" x="1224" y="166.4" textLength="12" clip-path="url(#terminal-4165939858-line-6)">
+</text><text class="terminal-4165939858-r2" x="1224" y="190.8" textLength="12" clip-path="url(#terminal-4165939858-line-7)">
+</text><text class="terminal-4165939858-r3" x="0" y="215.2" textLength="12" clip-path="url(#terminal-4165939858-line-8)">●</text><text class="terminal-4165939858-r2" x="12" y="215.2" textLength="948" clip-path="url(#terminal-4165939858-line-8)">&#160;I&#160;didn&#x27;t&#160;change&#160;the&#160;tagline.&#160;`src/pricing.ts`&#160;has&#160;a&#160;lock&#160;on&#160;the&#160;`pricing-copy`</text><text class="terminal-4165939858-r2" x="1224" y="215.2" textLength="12" clip-path="url(#terminal-4165939858-line-8)">
+</text><text class="terminal-4165939858-r2" x="0" y="239.6" textLength="804" clip-path="url(#terminal-4165939858-line-9)">&#160;&#160;region,&#160;and&#160;the&#160;edit&#160;hook&#160;blocked&#160;the&#160;write.&#160;Nothing&#160;was&#160;written.</text><text class="terminal-4165939858-r2" x="1224" y="239.6" textLength="12" clip-path="url(#terminal-4165939858-line-9)">
+</text><text class="terminal-4165939858-r2" x="1224" y="264" textLength="12" clip-path="url(#terminal-4165939858-line-10)">
+</text><text class="terminal-4165939858-r2" x="0" y="288.4" textLength="840" clip-path="url(#terminal-4165939858-line-11)">&#160;&#160;Run&#160;this&#160;in&#160;your&#160;own&#160;terminal,&#160;then&#160;tell&#160;me&#160;and&#160;I&#x27;ll&#160;retry&#160;the&#160;edit:</text><text class="terminal-4165939858-r2" x="1224" y="288.4" textLength="12" clip-path="url(#terminal-4165939858-line-11)">
+</text><text class="terminal-4165939858-r2" x="1224" y="312.8" textLength="12" clip-path="url(#terminal-4165939858-line-12)">
+</text><text class="terminal-4165939858-r6" x="48" y="337.2" textLength="300" clip-path="url(#terminal-4165939858-line-13)">lock&#160;approve&#160;pricing-copy</text><text class="terminal-4165939858-r2" x="1224" y="337.2" textLength="12" clip-path="url(#terminal-4165939858-line-13)">
+</text>
+    </g>
+    </g>
+</svg>

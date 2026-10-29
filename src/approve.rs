@@ -81,11 +81,19 @@ fn show_diff(candidate: &Candidate) {
         },
     );
     // git diff exits with 1 whenever the files differ, which is always the case here.
-    let _ = Command::new("git")
+    // Its header names the temporary files, so only the hunks are shown.
+    let output = Command::new("git")
         .args(["diff", "--no-index", "--color=always", "--"])
         .arg(&a)
         .arg(&b)
-        .status();
+        .output();
+    if let Ok(output) = output {
+        let text = String::from_utf8_lossy(&output.stdout);
+        let hunks = text.lines().skip_while(|line| !line.contains("@@"));
+        for line in hunks {
+            println!("{line}");
+        }
+    }
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -112,6 +120,43 @@ fn now() -> String {
         rest % 3_600 / 60,
         rest % 60
     )
+}
+
+/// Writes one approval record and returns its path from the repository root.
+pub fn record(
+    root: &Path,
+    path: &str,
+    id: &str,
+    before: Option<&str>,
+    after: Option<&str>,
+    reason: &str,
+) -> Result<String, String> {
+    let name = git_text(root, &["config", "user.name"]).unwrap_or_default();
+    let email = git_text(root, &["config", "user.email"]).unwrap_or_default();
+    let record = json!({
+        "version": 1,
+        "path": path,
+        "id": id,
+        "before": before,
+        "after": after,
+        "approvedBy": format!("{name} <{email}>"),
+        "approvedAt": now(),
+        "reason": reason,
+    });
+    let slug = if id == WHOLE_FILE {
+        path.replace(['/', '\\'], "-")
+    } else {
+        id.to_string()
+    };
+    let to = after.unwrap_or("removed");
+    let file = format!(
+        "{APPROVALS}/{slug}.{}.{}.json",
+        &hash(path.as_bytes())[..6],
+        &to[..to.len().min(12)]
+    );
+    fs::create_dir_all(root.join(APPROVALS)).map_err(|error| error.to_string())?;
+    fs::write(root.join(&file), format!("{record:#}\n")).map_err(|error| error.to_string())?;
+    Ok(file)
 }
 
 pub fn run(root: &Path, filters: &[String], reason: Option<&str>) -> Result<i32, String> {
@@ -144,8 +189,6 @@ pub fn run(root: &Path, filters: &[String], reason: Option<&str>) -> Result<i32,
         println!("Nothing to approve: every lock matches HEAD or already has an approval.");
         return Ok(0);
     }
-    let name = git_text(root, &["config", "user.name"]).unwrap_or_default();
-    let email = git_text(root, &["config", "user.email"]).unwrap_or_default();
     let stdin = std::io::stdin();
     for item in list {
         let source = if item.pending.is_some() {
@@ -174,34 +217,19 @@ pub fn run(root: &Path, filters: &[String], reason: Option<&str>) -> Result<i32,
             println!("Skipped.");
             continue;
         }
-        let record = json!({
-            "version": 1,
-            "path": item.path,
-            "id": item.id,
-            "before": item.before,
-            "after": item.after,
-            "approvedBy": format!("{name} <{email}>"),
-            "approvedAt": now(),
-            "reason": reason.unwrap_or_default(),
-        });
-        let slug = if item.id == WHOLE_FILE {
-            item.path.replace(['/', '\\'], "-")
-        } else {
-            item.id.clone()
-        };
-        let after = item.after.as_deref().unwrap_or("removed");
-        let file = format!(
-            "{APPROVALS}/{slug}.{}.{}.json",
-            &hash(item.path.as_bytes())[..6],
-            &after[..after.len().min(12)]
-        );
-        fs::create_dir_all(root.join(APPROVALS)).map_err(|error| error.to_string())?;
-        fs::write(root.join(&file), format!("{record:#}\n")).map_err(|error| error.to_string())?;
+        let file = record(
+            root,
+            &item.path,
+            &item.id,
+            item.before.as_deref(),
+            item.after.as_deref(),
+            reason.unwrap_or_default(),
+        )?;
         if let Some(done) = &item.pending {
             let _ = fs::remove_file(&done.file);
         }
         let next = if item.pending.is_some() {
-            " The agent can now retry the same edit."
+            " The agent can now retry the same edit or command."
         } else {
             ""
         };

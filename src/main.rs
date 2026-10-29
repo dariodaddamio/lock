@@ -2,7 +2,8 @@
 //! person's approval.
 //!
 //!   lock hook claude|codex|cursor                 the agent hook; reads one tool call on stdin
-//!   lock check [--staged | --base <ref>]      verify locks against git
+//!   lock check [--staged [--record] | --base <ref>]
+//!                                             verify locks against git
 //!   lock approve [<id>|<path>...] [--reason <text>]
 //!                                             review and approve changes (terminal only)
 //!   lock list                                 print every lock in the working tree
@@ -18,13 +19,14 @@ mod pending;
 mod regions;
 mod repo;
 mod shell;
+mod watch;
 
-use repo::{View, WHOLE_FILE, git_text, inventory, violations};
+use repo::{View, WHOLE_FILE, git, git_text, inventory, violations};
 use std::path::PathBuf;
 
 const USAGE: &str = "Usage:
   lock hook claude|codex|cursor
-  lock check [--staged | --base <ref>]
+  lock check [--staged [--record] | --base <ref>]
   lock approve [<id>|<path>...] [--reason <text>]
   lock list
   lock install [--git] [--claude] [--codex] [--cursor]";
@@ -54,7 +56,38 @@ fn check(args: &[String]) -> Result<i32, String> {
         }
         None => (View::Worktree, "HEAD".into(), "HEAD".into()),
     };
-    let problems = violations(&root, &view, &base)?;
+    let mut problems = violations(&root, &view, &base)?;
+    // The commit hook records a person's own edits. A change made while an agent
+    // command was running is the agent's, and it still needs `lock approve`.
+    if args.iter().any(|arg| arg == "--record") && matches!(view, View::Index) {
+        let (agent, hand): (Vec<_>, Vec<_>) = problems.into_iter().partition(|problem| {
+            let after = problem.after.as_ref().and_then(|entry| entry.hash.clone());
+            watch::made_by_agent(
+                &root,
+                &problem.before.path,
+                &problem.before.id,
+                after.as_deref(),
+            )
+        });
+        if agent.is_empty() {
+            for problem in hand {
+                let (path, id) = (&problem.before.path, &problem.before.id);
+                let after = problem.after.as_ref().and_then(|entry| entry.hash.clone());
+                let file = approve::record(
+                    &root,
+                    path,
+                    id,
+                    problem.before.hash.as_deref(),
+                    after.as_deref(),
+                    "Edited by hand.",
+                )?;
+                git(&root, &["add", "--", &file])?;
+                watch::keep(&root, &file);
+                println!("lock: recorded your edit to {path} :: {id} in {file}.");
+            }
+        }
+        problems = agent;
+    }
     for problem in &problems {
         let (path, id) = (&problem.before.path, &problem.before.id);
         let what = if problem.after.is_some() {

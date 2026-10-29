@@ -64,14 +64,8 @@ expect "new lock added by agent" allow "$(j '{"cwd":"ROOT","tool_name":"Edit","t
 expect "unrelated file" allow "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/src/new.ts","content":"x"}}')"
 expect "outside repo" allow "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"C:/elsewhere/a.ts","content":"x"}}')"
 expect "notebook on locked file" deny "$(j '{"cwd":"ROOT","tool_name":"NotebookEdit","tool_input":{"notebook_path":"ROOT/catalog.json","new_source":"x"}}')"
-expect "shell sed -i on locked file" deny "$(j '{"cwd":"ROOT","tool_name":"Bash","tool_input":{"command":"sed -i s/Pay/Ship/ src/app.ts"}}')"
-expect "shell redirect into changelog" deny "$(j '{"cwd":"ROOT","tool_name":"Bash","tool_input":{"command":"echo x > CHANGELOG.md"}}')"
-expect "shell rm locked dir" deny "$(j '{"cwd":"ROOT","tool_name":"Bash","tool_input":{"command":"rm -rf src"}}')"
 expect "shell approve" deny "$(j '{"cwd":"ROOT","tool_name":"Bash","tool_input":{"command":"lock approve tagline"}}')"
-expect "powershell set-content" deny "$(j '{"cwd":"ROOT","tool_name":"PowerShell","tool_input":{"command":"Set-Content -Path CHANGELOG.md -Value x"}}')"
-expect "shell write to .locks" deny "$(j '{"cwd":"ROOT","tool_name":"Bash","tool_input":{"command":"cp /tmp/a.json .locks/approvals/a.json"}}')"
-expect "shell read locked file" allow "$(j '{"cwd":"ROOT","tool_name":"Bash","tool_input":{"command":"cat src/app.ts | head -3 2>&1"}}')"
-expect "shell write elsewhere" allow "$(j '{"cwd":"ROOT","tool_name":"Bash","tool_input":{"command":"echo x > notes.txt"}}')"
+expect "shell command runs" allow "$(j '{"cwd":"ROOT","tool_name":"Bash","tool_input":{"command":"echo x > CHANGELOG.md"}}')"
 expect "remove lock hook from settings" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.claude/settings.json","content":"{\u0022disableAllHooks\u0022: true}"}}')"
 expect "patch on locked file" deny "$(j '{"cwd":"ROOT","tool_name":"ApplyPatch","tool_input":{"patch":"*** Begin Patch\n*** Update File: src/app.ts\n@@\n-a\n+b\n*** End Patch"}}')"
 
@@ -80,11 +74,13 @@ expect "codex patch outside region" allow "$(j '{"cwd":"ROOT","tool_name":"apply
 expect "codex patch inside region" deny "$(j '{"cwd":"ROOT","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Update File: src/app.ts\n@@\n /* LOCKED: tagline START */\n-export const tagline = \"Pay for what you ship.\";\n+export const tagline = \"Ship.\";\n*** End Patch"}}')"
 expect "codex patch deletes locked file" deny "$(j '{"cwd":"ROOT","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Delete File: CHANGELOG.md\n*** End Patch"}}')"
 expect "codex shell apply_patch" deny "$(j '{"cwd":"ROOT","tool_name":"shell","tool_input":{"command":["bash","-lc","apply_patch <<EOF\n*** Begin Patch\n*** Update File: CHANGELOG.md\n@@\n-Initial release.\n+Changed.\n*** End Patch\nEOF"]}}')"
-expect "codex shell array sed" deny "$(j '{"cwd":"ROOT","tool_name":"exec_command","tool_input":{"cmd":["sed","-i","s/Pay/Ship/","src/app.ts"]}}')"
+expect "codex shell array runs" allow "$(j '{"cwd":"ROOT","tool_name":"exec_command","tool_input":{"cmd":["sed","-i","s/Pay/Ship/","src/app.ts"]}}')"
 
 # Cursor shapes
-cur="$(printf '%s' "$(j '{"cwd":"ROOT","command":"echo x > CHANGELOG.md"}')" | "$LOCK" hook cursor)"
-case "$cur" in *'"permission":"deny"'*) pass=$((pass+1)); echo "ok   cursor shell deny";; *) fail=$((fail+1)); echo "FAIL cursor shell deny $cur";; esac
+cur="$(printf '%s' "$(j '{"cwd":"ROOT","command":"lock approve tagline"}')" | "$LOCK" hook cursor)"
+case "$cur" in *'"permission":"deny"'*) pass=$((pass+1)); echo "ok   cursor shell approve deny";; *) fail=$((fail+1)); echo "FAIL cursor shell approve deny $cur";; esac
+# The commands above only ran the check before them; the end of the turn clears their copies.
+printf '%s' "$(j '{"cwd":"ROOT","hook_event_name":"Stop"}')" | "$LOCK" hook claude >/dev/null
 cur="$(printf '%s' "$(j '{"cwd":"ROOT","tool_name":"StrReplace","tool_input":{"file_path":"ROOT/src/app.ts","old_string":"free = 1","new_string":"free = 2"}}')" | "$LOCK" hook cursor)"
 case "$cur" in *'"permission":"allow"'*) pass=$((pass+1)); echo "ok   cursor edit allow";; *) fail=$((fail+1)); echo "FAIL cursor edit allow $cur";; esac
 
@@ -110,10 +106,57 @@ echo '{"name":"changed"}' > catalog.json
 git checkout -q catalog.json
 git add -A && "$LOCK" install --git >/dev/null && git commit -qm "approved tagline" && { pass=$((pass+1)); echo "ok   commit with approval"; } || { fail=$((fail+1)); echo "FAIL commit with approval"; }
 edit 's/Initial release\./Sneaky./' CHANGELOG.md; git add -A
-git commit -qm sneaky 2>/dev/null && { fail=$((fail+1)); echo "FAIL pre-commit blocks"; } || { pass=$((pass+1)); echo "ok   pre-commit blocks"; }
 git commit -qm sneaky --no-verify
 "$LOCK" check --base HEAD~1 2>/dev/null && { fail=$((fail+1)); echo "FAIL ci base catches --no-verify"; } || { pass=$((pass+1)); echo "ok   ci base catches --no-verify"; }
 echo y | "$LOCK" approve 2>/dev/null && { fail=$((fail+1)); echo "FAIL approve refuses piped input"; } || { pass=$((pass+1)); echo "ok   approve refuses piped input"; }
+
+# Commands run, and lock checks what they changed afterwards.
+check() { if eval "$2"; then pass=$((pass+1)); echo "ok   $1"; else fail=$((fail+1)); echo "FAIL $1 $out"; fi; }
+hook() { printf '{"cwd":"%s","session_id":"s1","hook_event_name":"%s","tool_name":"Bash","tool_input":{"command":"%s"}}' "$ROOT" "$1" "$2" | "$LOCK" hook claude; }
+agent() { out="$(hook PreToolUse "$1")"; [ -z "$out" ] || return 1; sh -c "$1" >/dev/null 2>&1; out="$(hook PostToolUse "$1")"; }
+"$LOCK" install --claude >/dev/null; git add -A; git commit -qm hooks
+mkdir -p tools
+cat > tools/rewrite.sh <<'EOF'
+perl -pi -e 's/"Ship\."/"Ship again."/; s/free = 1/free = 5/' src/app.ts
+EOF
+echo 'echo "{}" > .locks/approvals/forged.json' > tools/forge.sh
+echo 'echo "{}" > .claude/settings.json' > tools/unhook.sh
+cat > tools/commit.sh <<'EOF'
+perl -pi -e 's/Sneaky\./Agent./' CHANGELOG.md && git commit -qam agent
+EOF
+
+agent "sh tools/rewrite.sh"
+check "script change to a locked region is put back" 'grep -q "tagline = \"Ship.\";" src/app.ts && grep -q "free = 5" src/app.ts && case "$out" in *"put it back"*) true;; *) false;; esac'
+agent "sh tools/forge.sh"
+check "script that forges an approval is undone" '[ ! -e .locks/approvals/forged.json ] && case "$out" in *forged.json*) true;; *) false;; esac'
+agent "sh tools/unhook.sh"
+check "script that removes the hook is undone" 'grep -q "lock hook" .claude/settings.json'
+edit 's/Sneaky\./Hand./' CHANGELOG.md
+agent "git checkout -q -- CHANGELOG.md"
+check "checkout back to HEAD is allowed" '[ -z "$out" ] && grep -q "Sneaky." CHANGELOG.md'
+before=$(printf '/* LOCKED: tagline START */\nexport const tagline = "Ship.";\n/* LOCKED: tagline END */' | sha | cut -c1-64)
+after=$(printf '/* LOCKED: tagline START */\nexport const tagline = "Ship again.";\n/* LOCKED: tagline END */' | sha | cut -c1-64)
+printf '{"version":1,"path":"src/app.ts","id":"tagline","before":"%s","after":"%s"}\n' "$before" "$after" > .locks/approvals/again.json
+agent "sh tools/rewrite.sh"
+check "approved script change is kept" '[ -z "$out" ] && grep -q "Ship again." src/app.ts'
+git checkout -q -- src/app.ts; rm .locks/approvals/again.json
+head=$(git rev-parse HEAD)
+agent "sh tools/commit.sh"
+check "agent commit of a locked change is stopped" '[ "$(git rev-parse HEAD)" = "$head" ] && grep -q "Sneaky." CHANGELOG.md'
+git reset -q
+edit 's/Sneaky\./By hand./' CHANGELOG.md
+git commit -qam "hand edit" 2>/dev/null
+check "hand edit is recorded at commit" '[ "$(git log -1 --format=%s)" = "hand edit" ] && git ls-files .locks/approvals | grep -q "^.locks/approvals/history"'
+edit 's/By hand\./By hand again./' CHANGELOG.md
+agent "git commit -qam agent-commits-hand-edit"
+check "agent commit of a hand edit is recorded" '[ "$(git log -1 --format=%s)" = agent-commits-hand-edit ] && [ -z "$(git status --porcelain .locks)" ]'
+hook PreToolUse "echo never-ran" >/dev/null
+edit 's/By hand again\./Later./' CHANGELOG.md
+git commit -qam "during a turn" 2>/dev/null
+check "commit waits while an agent command may be running" '[ "$(git log -1 --format=%s)" = agent-commits-hand-edit ]'
+printf '{"cwd":"%s","session_id":"s1","hook_event_name":"Stop"}' "$ROOT" | "$LOCK" hook claude >/dev/null
+git commit -qam "after the turn" 2>/dev/null
+check "turn end clears the copies" '[ "$(git log -1 --format=%s)" = "after the turn" ]'
 
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]

@@ -1,14 +1,15 @@
 //! The agent hook. Claude Code, Codex, and Cursor run it before every file edit and
-//! shell command. It replays the proposed tool call against the file in memory and denies
-//! the call when a locked region would change without a person's approval, so the
-//! file on disk is never touched.
+//! shell command, after every shell command, and when the agent's turn ends. Before an
+//! edit, it replays the proposed tool call against the file in memory and denies the
+//! call when a locked region would change without a person's approval, so the file on
+//! disk is never touched. Shell commands are checked by `watch`.
 
 use crate::paths::{eq, relative};
 use crate::regions::{hash, regions, supports_markers};
 use crate::repo::{
     APPROVALS, FILE_LOCKS, WHOLE_FILE, approved, disk_approvals, find_root, parse_file_locks,
 };
-use crate::{patch, pending, shell};
+use crate::{patch, pending, shell, watch};
 use serde_json::{Value, json};
 use std::fs;
 use std::io::Read;
@@ -23,7 +24,7 @@ pub enum Host {
 
 /// Agent configuration that keeps this hook running. An agent may edit these files
 /// but may not take the hook out or switch hooks off.
-const HOOK_CONFIGS: [&str; 4] = [
+pub const HOOK_CONFIGS: [&str; 4] = [
     ".claude/settings.json",
     ".claude/settings.local.json",
     ".cursor/hooks.json",
@@ -40,6 +41,16 @@ const SHELL_TOOLS: [&str; 8] = [
     "local_shell",
 ];
 
+/// What the hook answers.
+pub enum Outcome {
+    Allow,
+    /// After a command, or at the end of a turn, with nothing to report.
+    Quiet,
+    Deny(String),
+    /// After a command ran: lock put locked text back and tells the agent.
+    Report(String),
+}
+
 pub fn run(host: Host) -> i32 {
     let mut input = String::new();
     let decision = std::io::stdin()
@@ -51,14 +62,24 @@ pub fn run(host: Host) -> i32 {
         })
         .and_then(|payload| decide(&payload));
     match decision {
-        Ok(None) => {
+        Ok(Outcome::Allow) => {
             if let Host::Cursor = host {
                 println!("{}", json!({ "permission": "allow" }));
             }
             0
         }
-        Ok(Some(reason)) => {
+        Ok(Outcome::Quiet) => {
+            if let Host::Cursor = host {
+                println!("{{}}");
+            }
+            0
+        }
+        Ok(Outcome::Deny(reason)) => {
             println!("{}", deny(host, &reason));
+            0
+        }
+        Ok(Outcome::Report(message)) => {
+            println!("{}", report(host, &message));
             0
         }
         Err(error) => {
@@ -68,6 +89,20 @@ pub fn run(host: Host) -> i32 {
             eprintln!("{reason}");
             2
         }
+    }
+}
+
+fn report(host: Host, message: &str) -> Value {
+    match host {
+        Host::Claude => json!({
+            "decision": "block",
+            "reason": message,
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": message,
+            }
+        }),
+        Host::Cursor => json!({ "additional_context": message }),
     }
 }
 
@@ -107,8 +142,7 @@ fn command_text(value: &Value) -> Option<String> {
     }
 }
 
-/// `None` allows the call; `Some(reason)` denies it.
-pub fn decide(payload: &Value) -> Result<Option<String>, String> {
+fn decide(payload: &Value) -> Result<Outcome, String> {
     let cwd = text(payload, &["cwd"])
         .map(PathBuf::from)
         .or_else(|| {
@@ -122,8 +156,12 @@ pub fn decide(payload: &Value) -> Result<Option<String>, String> {
         .or_else(|| std::env::current_dir().ok())
         .ok_or("no working directory")?;
     let Some(root) = find_root(&cwd) else {
-        return Ok(None);
+        return Ok(Outcome::Allow);
     };
+    let event = text(payload, &["hook_event_name", "hookEventName"])
+        .unwrap_or("PreToolUse")
+        .to_ascii_lowercase();
+    let session = text(payload, &["session_id", "conversation_id"]).unwrap_or_default();
     let tool = text(payload, &["tool_name", "toolName"])
         .unwrap_or_default()
         .rsplit('.')
@@ -135,28 +173,70 @@ pub fn decide(payload: &Value) -> Result<Option<String>, String> {
         .or_else(|| payload.get("arguments"))
         .unwrap_or(&Value::Null);
     let command = command_text(input).or_else(|| command_text(payload));
-    let changes = if SHELL_TOOLS.contains(&tool.as_str()) || (input.is_null() && command.is_some())
-    {
+    let is_shell = SHELL_TOOLS.contains(&tool.as_str()) || (input.is_null() && command.is_some());
+
+    match event.as_str() {
+        "stop" | "sessionend" => {
+            watch::prune(&root, Some(session));
+            return Ok(Outcome::Quiet);
+        }
+        "posttooluse" | "aftershellexecution" => {
+            let Some(command) = command.filter(|_| is_shell) else {
+                return Ok(Outcome::Quiet);
+            };
+            // The command already ran, so an error here cannot block it; it is reported.
+            return Ok(match watch::after(&root, session, &command) {
+                Ok(None) => Outcome::Quiet,
+                Ok(Some(message)) => Outcome::Report(message),
+                Err(error) => Outcome::Report(format!(
+                    "lock could not check what this command changed: {error}. Ask the user to run `lock check`."
+                )),
+            });
+        }
+        _ => {}
+    }
+
+    let changes = if is_shell {
         let Some(command) = command else {
-            return Ok(None);
+            return Ok(Outcome::Allow);
         };
+        if let Some(reason) = shell::denial(&command) {
+            return Ok(Outcome::Deny(reason));
+        }
         // Codex can also run `apply_patch` through the shell with the patch inline.
-        let Some(start) = command.find("*** Begin Patch") else {
-            return Ok(shell::denial(&root, &cwd, &command));
+        let changes = match command.find("*** Begin Patch") {
+            Some(start) => {
+                let body = &command[start..];
+                let end = body.find("*** End Patch").map_or(body.len(), |at| at + 13);
+                patch_changes(&root, &cwd, &body[..end])
+            }
+            None => Vec::new(),
         };
-        let body = &command[start..];
-        let end = body.find("*** End Patch").map_or(body.len(), |at| at + 13);
-        patch_changes(&root, &cwd, &body[..end])
+        let reasons = judge_all(&root, &changes)?;
+        if !reasons.is_empty() {
+            return Ok(Outcome::Deny(reasons));
+        }
+        watch::before(&root, session, &command)?;
+        return Ok(Outcome::Allow);
     } else {
         proposals(&root, &cwd, &tool, input, payload)?
     };
+    let reasons = judge_all(&root, &changes)?;
+    Ok(if reasons.is_empty() {
+        Outcome::Allow
+    } else {
+        Outcome::Deny(reasons)
+    })
+}
+
+fn judge_all(root: &Path, changes: &[Change]) -> Result<String, String> {
     let mut reasons = Vec::new();
     for change in changes {
-        if let Some(reason) = judge(&root, &change)? {
+        if let Some(reason) = judge(root, change)? {
             reasons.push(reason);
         }
     }
-    Ok((!reasons.is_empty()).then(|| reasons.join("\n\n")))
+    Ok(reasons.join("\n\n"))
 }
 
 /// What a tool call would leave in one file.
@@ -393,11 +473,11 @@ fn judge(root: &Path, change: &Change) -> Result<Option<String>, String> {
     }
 
     if HOOK_CONFIGS.iter().any(|config| eq(path, config)) {
-        let had_hook = before.is_some_and(|text| text.contains("lock hook"));
-        let keeps_hook = after.is_some_and(|text| text.contains("lock hook"));
-        let disables = after.is_some_and(|text| text.contains("disableAllHooks"))
-            && !before.is_some_and(|text| text.contains("disableAllHooks"));
-        if (had_hook && !keeps_hook) || disables {
+        let count =
+            |text: Option<&str>, needle: &str| text.map_or(0, |t| t.matches(needle).count());
+        let drops_hook = count(after, "lock hook") < count(before, "lock hook");
+        let disables = count(after, "disableAllHooks") > count(before, "disableAllHooks");
+        if drops_hook || disables {
             return Ok(Some(format!(
                 "lock: this edit to {path} would remove the lock hook or turn hooks off. Agents cannot do that. Ask the user."
             )));
