@@ -75,6 +75,13 @@ expect "shell write elsewhere" allow "$(j '{"cwd":"ROOT","tool_name":"Bash","too
 expect "remove lock hook from settings" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.claude/settings.json","content":"{\u0022disableAllHooks\u0022: true}"}}')"
 expect "patch on locked file" deny "$(j '{"cwd":"ROOT","tool_name":"ApplyPatch","tool_input":{"patch":"*** Begin Patch\n*** Update File: src/app.ts\n@@\n-a\n+b\n*** End Patch"}}')"
 
+# Codex shapes: patches are replayed, so a patch outside a region passes.
+expect "codex patch outside region" allow "$(j '{"cwd":"ROOT","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Update File: src/app.ts\n@@\n-export const free = 1;\n+export const free = 9;\n*** End Patch"}}')"
+expect "codex patch inside region" deny "$(j '{"cwd":"ROOT","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Update File: src/app.ts\n@@\n /* LOCKED: tagline START */\n-export const tagline = \"Pay for what you ship.\";\n+export const tagline = \"Ship.\";\n*** End Patch"}}')"
+expect "codex patch deletes locked file" deny "$(j '{"cwd":"ROOT","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Delete File: CHANGELOG.md\n*** End Patch"}}')"
+expect "codex shell apply_patch" deny "$(j '{"cwd":"ROOT","tool_name":"shell","tool_input":{"command":["bash","-lc","apply_patch <<EOF\n*** Begin Patch\n*** Update File: CHANGELOG.md\n@@\n-Initial release.\n+Changed.\n*** End Patch\nEOF"]}}')"
+expect "codex shell array sed" deny "$(j '{"cwd":"ROOT","tool_name":"exec_command","tool_input":{"cmd":["sed","-i","s/Pay/Ship/","src/app.ts"]}}')"
+
 # Cursor shapes
 cur="$(printf '%s' "$(j '{"cwd":"ROOT","command":"echo x > CHANGELOG.md"}')" | "$LOCK" hook cursor)"
 case "$cur" in *'"permission":"deny"'*) pass=$((pass+1)); echo "ok   cursor shell deny";; *) fail=$((fail+1)); echo "FAIL cursor shell deny $cur";; esac

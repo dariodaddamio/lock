@@ -1,4 +1,4 @@
-//! `lock install`: registers the agent hook with Claude Code and Cursor and adds the
+//! `lock install`: registers the agent hook with Claude Code, Codex, and Cursor and adds the
 //! staged check to the git pre-commit hook. Running it again changes nothing.
 
 use crate::repo::git_text;
@@ -8,11 +8,11 @@ use std::path::Path;
 
 const HOME: &str = "https://github.com/dariodaddamio/lock";
 
-/// Exit code 2 is what makes Claude Code block the call, so a missing binary blocks
-/// edits instead of letting them through unchecked.
-fn claude_command() -> String {
+/// Exit code 2 is what makes Claude Code and Codex block the call, so a missing
+/// binary blocks edits instead of letting them through unchecked.
+fn hook_command(host: &str) -> String {
     format!(
-        "command -v lock >/dev/null 2>&1 || {{ echo 'lock is not installed, so edits are blocked. Install it: {HOME}' >&2; exit 2; }}; lock hook claude"
+        "command -v lock >/dev/null 2>&1 || {{ echo 'lock is not installed, so edits are blocked. Install it: {HOME}' >&2; exit 2; }}; lock hook {host}"
     )
 }
 
@@ -45,22 +45,41 @@ fn mentions_lock(entries: &Value) -> bool {
     entries.to_string().contains("lock hook")
 }
 
-fn claude(root: &Path) -> Result<String, String> {
-    let path = root.join(".claude/settings.json");
+/// Claude Code and Codex read the same `PreToolUse` hook shape.
+fn pre_tool_use(root: &Path, file: &str, matcher: &str, host: &str) -> Result<String, String> {
+    let path = root.join(file);
     let mut settings = read_json(&path)?;
     let hooks = object(object(&mut settings)?.entry("hooks").or_insert(json!({})))?;
     let pre = hooks.entry("PreToolUse").or_insert(json!([]));
     if mentions_lock(pre) {
-        return Ok(".claude/settings.json already runs the lock hook.".into());
+        return Ok(format!("{file} already runs the lock hook."));
     }
     pre.as_array_mut()
         .ok_or("PreToolUse must be a list")?
         .push(json!({
-            "matcher": "Edit|MultiEdit|Write|NotebookEdit|Bash|PowerShell",
-            "hooks": [{ "type": "command", "command": claude_command() }],
+            "matcher": matcher,
+            "hooks": [{ "type": "command", "command": hook_command(host) }],
         }));
     write_json(&path, &settings)?;
-    Ok("Added the lock hook to .claude/settings.json.".into())
+    Ok(format!("Added the lock hook to {file}."))
+}
+
+fn claude(root: &Path) -> Result<String, String> {
+    pre_tool_use(
+        root,
+        ".claude/settings.json",
+        "Edit|MultiEdit|Write|NotebookEdit|Bash|PowerShell",
+        "claude",
+    )
+}
+
+fn codex(root: &Path) -> Result<String, String> {
+    pre_tool_use(
+        root,
+        ".codex/hooks.json",
+        "apply_patch|functions\\.apply_patch|Edit|Write|MultiEdit|Delete|Bash|Shell|PowerShell|exec|exec_command|functions\\.exec|functions\\.exec_command|local_shell",
+        "codex",
+    )
 }
 
 fn cursor(root: &Path) -> Result<String, String> {
@@ -140,6 +159,9 @@ pub fn run(flags: &[String]) -> Result<i32, String> {
     }
     if wants("--claude") {
         steps.push(claude);
+    }
+    if wants("--codex") {
+        steps.push(codex);
     }
     if wants("--cursor") {
         steps.push(cursor);

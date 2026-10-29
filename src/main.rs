@@ -1,17 +1,18 @@
 //! lock: lock regions of a repository so coding agents cannot change them without a
 //! person's approval.
 //!
-//!   lock hook claude|cursor                   the agent hook; reads one tool call on stdin
+//!   lock hook claude|codex|cursor                 the agent hook; reads one tool call on stdin
 //!   lock check [--staged | --base <ref>]      verify locks against git
 //!   lock approve [<id>|<path>...] [--reason <text>]
 //!                                             review and approve changes (terminal only)
 //!   lock list                                 print every lock in the working tree
-//!   lock install [--git] [--claude] [--cursor]
+//!   lock install [--git] [--claude] [--codex] [--cursor]
 //!                                             register the hooks in this clone
 
 mod approve;
 mod hook;
 mod install;
+mod patch;
 mod paths;
 mod pending;
 mod regions;
@@ -22,11 +23,11 @@ use repo::{View, WHOLE_FILE, git_text, inventory, violations};
 use std::path::PathBuf;
 
 const USAGE: &str = "Usage:
-  lock hook claude|cursor
+  lock hook claude|codex|cursor
   lock check [--staged | --base <ref>]
   lock approve [<id>|<path>...] [--reason <text>]
   lock list
-  lock install [--git] [--claude] [--cursor]";
+  lock install [--git] [--claude] [--codex] [--cursor]";
 
 fn root() -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
@@ -78,9 +79,9 @@ fn run(args: &[String]) -> Result<i32, String> {
     let rest = args.get(1..).unwrap_or_default();
     match args.first().map(String::as_str) {
         Some("hook") => match rest.first().map(String::as_str) {
-            Some("claude") => Ok(hook::run(hook::Host::Claude)),
+            Some("claude" | "codex") => Ok(hook::run(hook::Host::Claude)),
             Some("cursor") => Ok(hook::run(hook::Host::Cursor)),
-            _ => Err("lock hook needs a host: claude or cursor".into()),
+            _ => Err("lock hook needs a host: claude, codex, or cursor".into()),
         },
         Some("check") => check(rest),
         Some("approve") => {

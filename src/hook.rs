@@ -1,5 +1,5 @@
-//! The agent hook. Claude Code and Cursor run it before every file edit and shell
-//! command. It replays the proposed tool call against the file in memory and denies
+//! The agent hook. Claude Code, Codex, and Cursor run it before every file edit and
+//! shell command. It replays the proposed tool call against the file in memory and denies
 //! the call when a locked region would change without a person's approval, so the
 //! file on disk is never touched.
 
@@ -8,7 +8,7 @@ use crate::regions::{hash, regions, supports_markers};
 use crate::repo::{
     APPROVALS, FILE_LOCKS, WHOLE_FILE, approved, disk_approvals, find_root, parse_file_locks,
 };
-use crate::{pending, shell};
+use crate::{patch, pending, shell};
 use serde_json::{Value, json};
 use std::fs;
 use std::io::Read;
@@ -16,18 +16,21 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy)]
 pub enum Host {
+    /// Claude Code and Codex share the `PreToolUse` output contract.
     Claude,
     Cursor,
 }
 
 /// Agent configuration that keeps this hook running. An agent may edit these files
 /// but may not take the hook out or switch hooks off.
-const HOOK_CONFIGS: [&str; 3] = [
+const HOOK_CONFIGS: [&str; 4] = [
     ".claude/settings.json",
     ".claude/settings.local.json",
     ".cursor/hooks.json",
+    ".codex/hooks.json",
 ];
-const SHELL_TOOLS: [&str; 7] = [
+const SHELL_TOOLS: [&str; 8] = [
+    "exec",
     "bash",
     "powershell",
     "shell",
@@ -88,6 +91,22 @@ fn text<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
         .find_map(|key| value.get(*key).and_then(Value::as_str))
 }
 
+/// A shell command as text. Codex sends some commands as an argument list.
+fn command_text(value: &Value) -> Option<String> {
+    let command = value.get("command").or_else(|| value.get("cmd"))?;
+    match command {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(parts) => Some(
+            parts
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        _ => None,
+    }
+}
+
 /// `None` allows the call; `Some(reason)` denies it.
 pub fn decide(payload: &Value) -> Result<Option<String>, String> {
     let cwd = text(payload, &["cwd"])
@@ -107,16 +126,30 @@ pub fn decide(payload: &Value) -> Result<Option<String>, String> {
     };
     let tool = text(payload, &["tool_name", "toolName"])
         .unwrap_or_default()
+        .rsplit('.')
+        .next()
+        .unwrap_or_default()
         .to_ascii_lowercase();
     let input = payload
         .get("tool_input")
         .or_else(|| payload.get("arguments"))
         .unwrap_or(&Value::Null);
-    let command = text(input, &["command", "cmd"]).or_else(|| text(payload, &["command"]));
-    if SHELL_TOOLS.contains(&tool.as_str()) || (input.is_null() && command.is_some()) {
-        return Ok(command.and_then(|command| shell::denial(&root, &cwd, command)));
-    }
-    let changes = proposals(&root, &cwd, &tool, input, payload)?;
+    let command = command_text(input).or_else(|| command_text(payload));
+    let changes = if SHELL_TOOLS.contains(&tool.as_str()) || (input.is_null() && command.is_some())
+    {
+        let Some(command) = command else {
+            return Ok(None);
+        };
+        // Codex can also run `apply_patch` through the shell with the patch inline.
+        let Some(start) = command.find("*** Begin Patch") else {
+            return Ok(shell::denial(&root, &cwd, &command));
+        };
+        let body = &command[start..];
+        let end = body.find("*** End Patch").map_or(body.len(), |at| at + 13);
+        patch_changes(&root, &cwd, &body[..end])
+    } else {
+        proposals(&root, &cwd, &tool, input, payload)?
+    };
     let mut reasons = Vec::new();
     for change in changes {
         if let Some(reason) = judge(&root, &change)? {
@@ -216,6 +249,36 @@ fn looks_like_patch(text: &str) -> bool {
         || (text.contains("\n+++ ") && text.starts_with("--- "))
 }
 
+/// Every file a patch touches. A Codex patch that applies exactly is replayed; any
+/// other patch leaves its files unknown, which blocks it only on locked files.
+fn patch_changes(root: &Path, cwd: &Path, patch: &str) -> Vec<Change> {
+    let replayed = patch::replay(patch, |raw| {
+        relative(root, cwd, raw).and_then(|path| read(root, &path))
+    });
+    match replayed {
+        Some(writes) => writes
+            .into_iter()
+            .filter_map(|(raw, after)| {
+                let path = relative(root, cwd, &raw)?;
+                Some(Change {
+                    before: read(root, &path),
+                    path,
+                    after: after.map_or(After::Deleted, After::Content),
+                })
+            })
+            .collect(),
+        None => patch_paths(patch)
+            .into_iter()
+            .filter_map(|raw| relative(root, cwd, &raw))
+            .map(|path| Change {
+                before: read(root, &path),
+                path,
+                after: After::Unknown("the patch does not apply exactly"),
+            })
+            .collect(),
+    }
+}
+
 fn proposals(
     root: &Path,
     cwd: &Path,
@@ -225,18 +288,15 @@ fn proposals(
 ) -> Result<Vec<Change>, String> {
     let patch = input
         .as_str()
-        .or_else(|| text(input, &["patch", "patchText", "diff", "input", "raw"]))
+        .or_else(|| {
+            text(
+                input,
+                &["patch", "patchText", "diff", "input", "raw", "command"],
+            )
+        })
         .filter(|body| looks_like_patch(body));
     if let Some(patch) = patch {
-        return Ok(patch_paths(patch)
-            .into_iter()
-            .filter_map(|raw| relative(root, cwd, &raw))
-            .map(|path| Change {
-                before: read(root, &path),
-                path,
-                after: After::Unknown("patches are not replayed"),
-            })
-            .collect());
+        return Ok(patch_changes(root, cwd, patch));
     }
     let keys = [
         "file_path",
