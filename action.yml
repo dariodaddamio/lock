@@ -1,0 +1,62 @@
+name: lock check
+description: Fails when a locked region changed or disappeared without a committed approval.
+branding:
+  icon: lock
+  color: gray-dark
+
+inputs:
+  version:
+    description: Release tag of lock to run. Defaults to the tag this action was used at.
+    required: false
+    default: ""
+  base:
+    description: Ref to compare against. Defaults to the pull request base, or the previous commit on a push.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install lock
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version || github.action_ref }}
+      run: |
+        set -euo pipefail
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64) target=x86_64-unknown-linux-musl ;;
+          Linux-ARM64) target=aarch64-unknown-linux-gnu ;;
+          macOS-ARM64) target=aarch64-apple-darwin ;;
+          macOS-X64) target=x86_64-apple-darwin ;;
+          Windows-X64) target=x86_64-pc-windows-msvc ;;
+          *) echo "lock has no release for $RUNNER_OS-$RUNNER_ARCH" >&2; exit 1 ;;
+        esac
+        dir="$RUNNER_TEMP/lock-bin"
+        mkdir -p "$dir"
+        base="https://github.com/dariodaddamio/lock/releases/download/$VERSION"
+        if [ "$RUNNER_OS" = Windows ]; then
+          curl -fsSL "$base/lock-$target.zip" -o "$dir/lock.zip"
+          unzip -q -o "$dir/lock.zip" -d "$dir"
+        else
+          curl -fsSL "$base/lock-$target.tar.gz" | tar -xz -C "$dir"
+        fi
+        echo "$dir" >> "$GITHUB_PATH"
+    - name: Check locks
+      shell: bash
+      env:
+        BASE: ${{ inputs.base }}
+        EVENT: ${{ github.event_name }}
+        PR_BASE: ${{ github.base_ref }}
+        BEFORE: ${{ github.event.before }}
+      run: |
+        set -euo pipefail
+        if [ -z "$BASE" ]; then
+          if [ "$EVENT" = pull_request ] || [ "$EVENT" = pull_request_target ]; then
+            BASE="origin/$PR_BASE"
+          elif [ -n "${BEFORE:-}" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            BASE="$BEFORE"
+          else
+            BASE="HEAD~1"
+          fi
+        fi
+        lock check --base "$BASE"

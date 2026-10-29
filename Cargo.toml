@@ -1,0 +1,23 @@
+[package]
+name = "lock"
+version = "0.1.0"
+edition = "2024"
+description = "Lock regions of a repository so coding agents cannot change them without a person's approval."
+license = "MIT"
+repository = "https://github.com/dariodaddamio/lock"
+readme = "README.md"
+keywords = ["agents", "claude-code", "cursor", "git-hooks", "code-review"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "lock"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
