@@ -380,6 +380,26 @@ Claude Code settings or plugins, and agents cannot add one.
 | Code owner review | It finds the change in review, after the agent has made it. |
 | `lock` | It stops the change at the tool call, for any part of a file, and checks again at commit and in CI. |
 
+### How do I change locked text myself?
+
+Edit it as usual. Before you commit, run `lock approve` in your terminal: it shows
+your change as a diff and records it. Then commit the approval file with your
+change. Until you do, the commit hook that `lock install` adds refuses the commit.
+
+### What happens when locked text is moved or renamed?
+
+A move counts as removing the locked text from its old path.
+
+| Who moves it | What happens |
+| --- | --- |
+| An agent, with an edit tool or a patch | The tool call is refused, and nothing changes. |
+| An agent, with a shell command such as `git mv` | `lock` puts the file back at its old path, unstages the move, and tells the agent. A copy that the command made at the new path stays. |
+| An agent, with a commit, even with `--no-verify` | The commit is refused or undone. |
+| You | `git commit` asks you to run `lock approve` once. After that commit, the lock lives at the new path. |
+
+Copying locked text to a new place needs no approval, because a new lock only adds
+protection.
+
 ### What if the agent commits my edit?
 
 The commit is refused until you approve your edit with `lock approve`. After that,
