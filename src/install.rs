@@ -73,6 +73,11 @@ fn agent_hooks(
         if let Some(matcher) = matcher {
             entry["matcher"] = json!(matcher);
         }
+        // On Windows, Codex runs `command_windows`, which may not be a POSIX shell, so
+        // that command has no shell syntax.
+        if host == "codex" {
+            entry["hooks"][0]["command_windows"] = json!(format!("lock hook {host}"));
+        }
         // An entry from an older lock is brought up to date in place.
         match list.iter_mut().find(|existing| mentions_lock(existing)) {
             Some(existing) if *existing == entry => {}

@@ -40,6 +40,11 @@ That is all the setup. Now tell your agent what to lock, for example "Lock the
 pricing tagline." The agent puts two comment lines around the text, and from then
 on `lock` refuses every change to that text that you have not approved.
 
+Each agent asks you once before it runs hooks from a repository. Claude Code asks
+whether you trust the folder, Codex runs project hooks only in a trusted project
+and asks you to review new hooks, and Cursor reads `.cursor/hooks.json` when it
+opens the project.
+
 ## At a glance
 
 | | |
