@@ -245,10 +245,18 @@ the agent settings, the commit hook, and the approval records, and each of those
 needs a short git call, which costs most on Windows. The commit check reads only
 the files that the commit changes.
 
-These runners are shared machines, so a number can move by a third from one run to the next. The binary is 0.75 to 0.9 MB and the installer downloads 350 to 480 KB, depending on your system. A process uses about 5 MB of memory. An approval
-record is about 350 bytes. While an agent command runs, `lock` keeps a copy of
-each locked file in `.git/lock/`, and it removes the copies when the agent's turn
-ends. To measure your own machine, run `python3 tests/bench.py <path to lock>`.
+These runners are shared machines, so a number can move by a third from one run
+to the next. To measure your own machine, run
+`python3 tests/bench.py <path to lock>`.
+
+| Size | |
+| --- | --- |
+| Installed binary | 0.75 to 0.9 MB |
+| What the installer downloads | 350 to 480 KB, depending on your system |
+| Dependencies | Two |
+| Memory while it runs | About 5 MB |
+| An approval record | About 350 bytes |
+| Copies while an agent command runs | One of each locked file, in `.git/lock/`, removed when the agent's turn ends |
 
 ## Lock markers
 
