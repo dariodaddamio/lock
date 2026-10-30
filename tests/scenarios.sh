@@ -41,10 +41,10 @@ git add -A; git commit -qm init
 
 pass=0; fail=0
 expect() { # name, expected (allow|deny), payload
-  out="$(printf '%s' "$3" | "$LOCK" hook claude)"; code=$?
+  out="$(printf '%s' "$3" | "$LOCK" hook claude 2>"$WORK/.stderr")"; code=$?
   if [ -n "$out" ]; then got=deny; else got=allow; fi
   [ $code -eq 2 ] && got="error"
-  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "ok   $1"; else fail=$((fail+1)); echo "FAIL $1 (got $got) $out"; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "ok   $1"; else fail=$((fail+1)); echo "FAIL $1 (got $got) $out"; cat "$WORK/.stderr"; fi
 }
 j() { printf '%s' "$1" | sed "s#ROOT#${ROOT//\\/\\\\}#g"; }
 
@@ -195,5 +195,7 @@ out="$(call default PostToolUse t3 'Ship.' 'Ship today.')"
 check "a yes is recorded after the edit" 'case "$out" in *approved*) true;; *) false;; esac && "$LOCK" check >/dev/null'
 expect "agent cannot add a hook that answers prompts" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.claude/settings.json","content":"{\u0022a\u0022: \u0022lock hook lock hook lock hook lock hook\u0022, \u0022PermissionRequest\u0022: []}"}}')"
 
+# On a failure, show the agent settings, which several checks depend on.
+[ "$fail" -eq 0 ] || { echo "--- .claude/settings.json"; cat .claude/settings.json; }
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]
