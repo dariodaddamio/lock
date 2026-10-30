@@ -398,6 +398,35 @@ agent "git mv src/app.ts src/moved.ts"
 check "an agent's git mv of a locked file is undone and unstaged" '[ -f src/app.ts ] && [ -z "$(git status --porcelain -- src/app.ts)" ] && case "$out" in *"moved or deleted src/app.ts"*) true;; *) false;; esac'
 git rm -qf --cached src/moved.ts 2>/dev/null; rm -f src/moved.ts
 
+# 0.3.2 B
+echo "printf '%s\\n' '/* LOCKED: new-start START */' 'new' '/* LOCKED: new-start END */' > src/new-lock.ts && git add -N src/new-lock.ts && perl -pi -e 's/^new$/changed/' src/new-lock.ts" > tools/intent-to-add.sh
+agent "sh tools/intent-to-add.sh"
+check "intent-to-add lock is not restored" 'grep -q "^changed$" src/new-lock.ts && "$LOCK" check >/dev/null'
+rm -f src/new-lock.ts tools/intent-to-add.sh
+
+echo "git rm -q src/app.ts && printf '%s\\n' '/* LOCKED: tagline START */' 'replacement' '/* LOCKED: tagline END */' > src/app.ts" > tools/untracked-replacement.sh
+agent "sh tools/untracked-replacement.sh"
+check "untracked replacement restores committed locked text" '! grep -q replacement src/app.ts'
+git checkout -q -- src/app.ts; rm -f tools/untracked-replacement.sh
+
+mkdir -p assets
+printf 'before\0binary\r\nend' > assets/blob.bin
+git add assets/blob.bin && git commit -qm binary-lock
+sed -i 's#"catalog.json"#"catalog.json", "assets/blob.bin"#' .locks/files.json
+git add .locks/files.json && git commit -qm binary-lock-config
+echo "perl -pi -e 's/\r\n/\n/g' assets/blob.bin" > tools/binary-rewrite.sh
+agent "sh tools/binary-rewrite.sh"
+check "binary whole-file lock restores CRLF byte" 'od -An -tx1 assets/blob.bin | tr -d " \n" | grep -q "0062696e6172790d0a656e64"'
+git checkout -q HEAD~1 -- .locks/files.json; git add .locks/files.json; git commit -qm binary-lock-cleanup
+
+echo "git commit --allow-empty -qm head-read-loose" > tools/head-read.sh
+agent "sh tools/head-read.sh"
+check "HEAD is read without git after a commit" '[ -z "$out" ]'
+echo "git commit --allow-empty -qm head-read-packed && git pack-refs --all" > tools/head-read-packed.sh
+agent "sh tools/head-read-packed.sh"
+check "packed HEAD is read without git" '[ -z "$out" ]'
+rm -f tools/head-read.sh tools/head-read-packed.sh
+
 # On a failure, show the agent settings, which several checks depend on.
 [ "$fail" -eq 0 ] || { echo "--- .claude/settings.json"; cat .claude/settings.json; }
 echo "passed $pass, failed $fail"
