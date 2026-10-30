@@ -48,8 +48,8 @@ on `lock` refuses every change to that text that you have not approved.
 | Platforms | macOS (Apple silicon and Intel), Linux (x64 and ARM64), and Windows (x64 and ARM64) |
 | File types | Most code, style, markup, and config files, as [listed below](#lock-markers). Any other file can be locked as a whole. |
 | Requirements | git. There is no runtime, server, account, or background process. |
-| Size | One binary of about 0.8 MB, which uses about 5 MB of memory while it runs |
-| Speed | About 0.01 seconds before an edit and 0.15 seconds for the commit check, in a repository of any size. See [Speed and size](#speed-and-size). |
+| Size | One binary of 0.7 to 0.8 MB, which uses about 5 MB of memory while it runs |
+| Speed | 1 to 8 ms before an edit and 12 to 112 ms for the commit check, whatever the size of the repository. See [Speed and size](#speed-and-size). |
 
 ## What lock is
 
@@ -188,26 +188,26 @@ check an edit, the hook refuses the edit instead of letting it through.
 
 ## Speed and size
 
-Each hook is a short process that starts, checks, and exits. These are the times
-of one `lock` process on Windows, from start to exit, as the median and the 95th
-percentile of 40 runs in generated repositories. Windows starts processes more
-slowly than macOS and Linux, so these times are an upper bound.
+Each hook is a short process that starts, checks, and exits. These are the medians
+of 40 runs on GitHub's hosted runners, in a generated repository with 10,000 files
+and 300 locks. The [CI benchmark](.github/workflows/ci.yml) measures them again on
+each push to the main branch, and it also measures repositories with 10 and 1,000
+files.
 
-| Step | 10 files, 1 lock | 1,000 files, 30 locks | 10,000 files, 300 locks |
+| Step | Linux | macOS | Windows |
 | --- | --- | --- | --- |
-| An edit to a file without locks | 7 ms (p95 8) | 11 ms (p95 13) | 10 ms (p95 11) |
-| An edit outside a locked region | 6 ms (p95 7) | 11 ms (p95 13) | 10 ms (p95 12) |
-| An edit inside a locked region | 7 ms (p95 8) | 10 ms (p95 12) | 10 ms (p95 13) |
-| Before a shell command | 51 ms (p95 61) | 91 ms (p95 100) | 455 ms (p95 930) |
-| After a shell command | 11 ms (p95 15) | 18 ms (p95 22) | 128 ms (p95 177) |
-| The commit check | 141 ms (p95 202) | 139 ms (p95 181) | 153 ms (p95 208) |
+| Before an edit, inside or outside a locked region | 1 ms | 5 to 8 ms | 4 ms |
+| Before a shell command | 80 ms | 222 ms | 177 ms |
+| After a shell command | 10 ms | 39 ms | 64 ms |
+| The commit check | 12 ms | 77 ms | 112 ms |
 
 An edit is checked in memory, so its time does not grow with the repository. The
-check around a shell command copies each file that holds a lock, so its time grows
-with the number of locked files, not with the size of the repository. The commit
-check reads only the files that the commit changes.
+check before a shell command copies each file that holds a lock, so its time grows
+with the number of locked files: with 30 locks it takes 12 ms on Linux, 39 ms on
+macOS, and 57 ms on Windows. The commit check reads only the files that the commit
+changes.
 
-The binary is about 0.8 MB, and a process uses about 5 MB of memory. An approval
+The binary is 0.7 to 0.8 MB, and a process uses about 5 MB of memory. An approval
 record is about 350 bytes. While an agent command runs, `lock` keeps a copy of
 each locked file in `.git/lock/`, and it removes the copies when the agent's turn
 ends. To measure your own machine, run `python3 tests/bench.py <path to lock>`.
