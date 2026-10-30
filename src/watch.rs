@@ -10,19 +10,19 @@
 //! are removed when the call ends, or when the agent's turn ends.
 
 use crate::guard;
+use crate::head;
 use crate::hook::{HOOK_CONFIGS, weakens_hooks};
 use crate::install::ensure_git_hook;
 use crate::pending;
 use crate::regions::{decode, hash, regions, splice, supports_markers};
 use crate::repo::{
-    FILE_LOCKS, View, WHOLE_FILE, approved, disk_approvals, git, git_dir, git_text,
-    parse_file_locks, violations,
+    FILE_LOCKS, View, WHOLE_FILE, approved, disk_approvals, epoch_seconds, git, git_dir, git_text,
+    lock_state, parse_file_locks, violations,
 };
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A copy older than this belongs to a command that never reported back.
 const STALE_SECONDS: u64 = 6 * 60 * 60;
@@ -56,13 +56,6 @@ fn file_mode(_path: &Path) -> Option<u32> {
     None
 }
 
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 fn key(session: &str, command: &str) -> String {
     format!(
         "{}-{}",
@@ -85,18 +78,13 @@ fn walk(root: &Path, dir: &str, found: &mut Vec<String>) {
     }
 }
 
-/// The pre-commit hook path and HEAD, from one git call.
+/// The pre-commit hook path and HEAD.
 fn hooks_and_head(root: &Path) -> (String, Option<String>) {
-    // Before the first commit HEAD does not resolve, and git fails the whole call.
-    let out = git_text(root, &["rev-parse", "--git-path", "hooks", "HEAD"])
-        .or_else(|_| git_text(root, &["rev-parse", "--git-path", "hooks"]))
-        .unwrap_or_default();
-    let mut lines = out.lines();
-    let hooks = lines.next().unwrap_or(".git/hooks").replace('\\', "/");
-    (
-        format!("{hooks}/pre-commit"),
-        lines.next().map(str::to_string),
-    )
+    let hooks = git_text(root, &["rev-parse", "--git-path", "hooks"])
+        .unwrap_or_else(|_| ".git/hooks".into())
+        .trim()
+        .replace('\\', "/");
+    (format!("{hooks}/pre-commit"), head::head(root))
 }
 
 fn is_pre_commit(path: &str) -> bool {
@@ -104,8 +92,8 @@ fn is_pre_commit(path: &str) -> bool {
 }
 
 /// Every file whose change lock must check after a command.
-fn watched(root: &Path, pre_commit: &str) -> Vec<String> {
-    let mut paths = View::Worktree.marked(root);
+fn watched(root: &Path, pre_commit: &str) -> Result<Vec<String>, String> {
+    let mut paths = View::Worktree.marked(root)?;
     paths.extend(
         parse_file_locks(fs::read(root.join(FILE_LOCKS)).ok().as_deref()).unwrap_or_default(),
     );
@@ -114,7 +102,7 @@ fn watched(root: &Path, pre_commit: &str) -> Vec<String> {
     paths.push(pre_commit.to_string());
     paths.sort();
     paths.dedup();
-    paths
+    Ok(paths)
 }
 
 /// Copies the watched files before an agent command runs.
@@ -126,7 +114,7 @@ pub fn before(root: &Path, session: &str, command: &str, background: bool) -> Re
     fs::create_dir_all(&dir).map_err(|error| format!("could not copy locked files: {error}"))?;
     let (pre_commit, head) = hooks_and_head(root);
     let mut files = Map::new();
-    for (index, path) in watched(root, &pre_commit).into_iter().enumerate() {
+    for (index, path) in watched(root, &pre_commit)?.into_iter().enumerate() {
         let entry = match fs::read(root.join(&path)) {
             Ok(bytes) => {
                 let name = index.to_string();
@@ -156,7 +144,7 @@ pub fn before(root: &Path, session: &str, command: &str, background: bool) -> Re
     let (local, global) = guard::hooks_paths(root);
     let manifest = json!({
         "session": session,
-        "started": now(),
+        "started": epoch_seconds(),
         "head": head,
         "preCommit": pre_commit,
         "files": files,
@@ -214,7 +202,7 @@ impl Snapshot {
 
     fn fresh(&self) -> bool {
         let started = self.manifest.get("started").and_then(Value::as_u64);
-        started.is_some_and(|at| now().saturating_sub(at) < STALE_SECONDS)
+        started.is_some_and(|at| epoch_seconds().saturating_sub(at) < STALE_SECONDS)
     }
 }
 
@@ -348,14 +336,7 @@ impl Judge<'_> {
             .entry(path.to_string())
             .or_insert_with(|| git(root, &["show", &format!("HEAD:{path}")]).ok())
             .clone()?;
-        if id == WHOLE_FILE {
-            return Some(hash(&bytes));
-        }
-        regions(path, &decode(&bytes).0)
-            .ok()?
-            .into_iter()
-            .find(|region| region.id == id)
-            .map(|region| region.hash)
+        lock_state(path, id, &bytes)
     }
 
     fn allows(&mut self, path: &str, id: &str, from: Option<&str>, to: Option<&str>) -> bool {
@@ -577,14 +558,14 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
 
     let mut judge = Judge {
         root,
-        records: disk_approvals(root)?,
+        records: disk_approvals(root, None)?,
         head_ok: None,
         old_head: snapshot.field("head").map(str::to_string),
         head_files: HashMap::new(),
     };
     let mut head_note = None;
     if let Some(old) = judge.old_head.clone()
-        && let Ok(new) = git_text(root, &["rev-parse", "--verify", "-q", "HEAD"])
+        && let Some(new) = head::head(root)
         && old != new
         && !judge.head_moved_cleanly()
     {

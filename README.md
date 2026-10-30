@@ -60,8 +60,8 @@ hooks, open `/hooks` in Codex and trust them.
 | Platforms | macOS (Apple silicon and Intel), Linux (x64 and ARM64), and Windows (x64 and ARM64) |
 | File types | Most code, style, markup, and config files, as [listed below](#lock-markers). Any other file can be locked as a whole. |
 | Requirements | git. There is no runtime, server, account, or background process. |
-| Size | One binary of 0.7 to 0.8 MB, which uses about 5 MB of memory while it runs |
-| Speed | 1 to 8 ms before an edit and 12 to 112 ms for the commit check, whatever the size of the repository. See [Speed and size](#speed-and-size). |
+| Size | One binary of 0.75 to 0.9 MB, which uses about 5 MB of memory while it runs |
+| Speed | 1 to 7 ms before an edit and 11 to 183 ms for the commit check, whatever the size of the repository. See [Speed and size](#speed-and-size). |
 
 ## What lock is
 
@@ -232,18 +232,20 @@ files.
 
 | Step | Linux | macOS | Windows |
 | --- | --- | --- | --- |
-| Before an edit, inside or outside a locked region | 1 ms | 5 to 8 ms | 4 ms |
-| Before a shell command | 80 ms | 222 ms | 177 ms |
-| After a shell command | 10 ms | 39 ms | 64 ms |
-| The commit check | 12 ms | 77 ms | 112 ms |
+| Before an edit, inside or outside a locked region | 1 ms | 3 to 4 ms | 6 to 7 ms |
+| Before a shell command | 81 ms | 122 ms | 341 ms |
+| After a shell command | 12 ms | 38 ms | 183 ms |
+| The commit check | 11 ms | 47 ms | 183 ms |
 
 An edit is checked in memory, so its time does not grow with the repository. The
 check before a shell command copies each file that holds a lock, so its time grows
-with the number of locked files: with 30 locks it takes 12 ms on Linux, 39 ms on
-macOS, and 57 ms on Windows. The commit check reads only the files that the commit
-changes.
+with the number of locked files: with 30 locks it takes 13 ms on Linux, 36 ms on
+macOS, and 111 ms on Windows. The checks around a command and at commit also guard
+the agent settings, the commit hook, and the approval records, and each of those
+needs a short git call, which costs most on Windows. The commit check reads only
+the files that the commit changes.
 
-The binary is 0.7 to 0.8 MB, and a process uses about 5 MB of memory. An approval
+The binary is 0.75 to 0.9 MB, and a process uses about 5 MB of memory. An approval
 record is about 350 bytes. While an agent command runs, `lock` keeps a copy of
 each locked file in `.git/lock/`, and it removes the copies when the agent's turn
 ends. To measure your own machine, run `python3 tests/bench.py <path to lock>`.
@@ -309,7 +311,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dariodaddamio/lock@v0.3.1
+      - uses: dariodaddamio/lock@v0.3.2
 ```
 
 Second, make sure that a person reviews each approval before it reaches the main

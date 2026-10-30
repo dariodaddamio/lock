@@ -100,21 +100,19 @@ fn agent_hooks(
 
 /// Every tool goes through the hook: edits are checked before they run, and any other
 /// tool that can write, such as a shell or an MCP tool, is checked by what it changed.
-fn claude(root: &Path) -> Result<String, String> {
+fn agent(root: &Path, host: &str) -> Result<String, String> {
+    let (host, file) = [
+        ("claude", ".claude/settings.json"),
+        ("codex", ".codex/hooks.json"),
+    ]
+    .into_iter()
+    .find(|(name, _)| *name == host)
+    .ok_or_else(|| format!("unknown agent: {host}"))?;
     agent_hooks(
         root,
-        ".claude/settings.json",
+        file,
         &[("PreToolUse", None), ("PostToolUse", None), ("Stop", None)],
-        "claude",
-    )
-}
-
-fn codex(root: &Path) -> Result<String, String> {
-    agent_hooks(
-        root,
-        ".codex/hooks.json",
-        &[("PreToolUse", None), ("PostToolUse", None), ("Stop", None)],
-        "codex",
+        host,
     )
 }
 
@@ -334,10 +332,10 @@ pub fn run(flags: &[String]) -> Result<i32, String> {
         steps.push(ensure_git_hook);
     }
     if wants("--claude") {
-        steps.push(claude);
+        steps.push(|root| agent(root, "claude"));
     }
     if wants("--codex") {
-        steps.push(codex);
+        steps.push(|root| agent(root, "codex"));
     }
     if wants("--cursor") {
         steps.push(cursor);

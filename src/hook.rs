@@ -45,45 +45,11 @@ const SHELL_TOOLS: [&str; 9] = [
     "local_shell",
     "monitor",
 ];
-/// Tools that only read, plan, or talk, so they cannot change a file. Any tool that is
-/// not on this list and is not a known edit or shell tool, such as an MCP tool, is
-/// checked like a shell command: lock copies the locked files before it runs and
-/// compares them after.
-const SAFE_TOOLS: [&str; 34] = [
-    "read",
-    "read_file",
-    "grep",
-    "glob",
-    "ls",
-    "list_dir",
-    "listdir",
-    "file_search",
-    "filesearch",
-    "codebase_search",
-    "semanticsearch",
-    "webfetch",
-    "web_fetch",
-    "websearch",
-    "web_search",
-    "todowrite",
-    "todo_write",
-    "update_plan",
-    "task",
-    "agent",
-    "askuserquestion",
-    "exitplanmode",
-    "enterplanmode",
-    "skill",
-    "toolsearch",
-    "view_image",
-    "bashoutput",
-    "taskoutput",
-    "notebookread",
-    "killshell",
-    "taskstop",
-    "sendmessage",
-    "listagents",
-    "read_lints",
+/// Tools that edit files and are replayed before they run. Every other tool that can
+/// write is checked by what it changed. Substring match, so `delete`, `move`, and
+/// `rename` tools are refused up front too.
+const EDIT_WORDS: [&str; 9] = [
+    "edit", "write", "patch", "replace", "delete", "remove", "move", "rename", "create",
 ];
 
 /// What the hook answers.
@@ -126,7 +92,7 @@ pub fn run(host: Host) -> i32 {
             0
         }
         Ok(Outcome::Deny(reason)) => {
-            println!("{}", deny(host, &reason));
+            println!("{}", format_message(host, "deny", &reason));
             0
         }
         Ok(Outcome::Ask(question)) => {
@@ -143,11 +109,11 @@ pub fn run(host: Host) -> i32 {
             0
         }
         Ok(Outcome::Report(message)) => {
-            println!("{}", report(host, &message));
+            println!("{}", format_message(host, "report", &message));
             0
         }
         Ok(Outcome::Note(message)) => {
-            println!("{}", note(host, &message));
+            println!("{}", format_message(host, "note", &message));
             0
         }
         Ok(Outcome::Notice(message)) => {
@@ -162,51 +128,33 @@ pub fn run(host: Host) -> i32 {
         Err(error) => {
             // Fail closed: when the hook cannot tell what a call does, the call does not run.
             let reason = format!("lock could not check this tool call, so it was blocked: {error}");
-            println!("{}", deny(host, &reason));
+            println!("{}", format_message(host, "deny", &reason));
             eprintln!("{reason}");
             2
         }
     }
 }
 
-fn report(host: Host, message: &str) -> Value {
+pub(crate) fn format_message(host: Host, kind: &str, message: &str) -> Value {
     match host {
-        Host::Claude | Host::Codex => json!({
-            "decision": "block",
-            "reason": message,
-            "hookSpecificOutput": {
-                "hookEventName": "PostToolUse",
-                "additionalContext": message,
-            }
-        }),
-        Host::Cursor => json!({ "additional_context": message }),
-    }
-}
-
-fn note(host: Host, message: &str) -> Value {
-    match host {
-        Host::Claude | Host::Codex => json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PostToolUse",
-                "additionalContext": message,
-            }
-        }),
-        Host::Cursor => json!({ "additional_context": message }),
-    }
-}
-
-pub(crate) fn deny(host: Host, reason: &str) -> Value {
-    match host {
-        Host::Claude | Host::Codex => json!({
+        Host::Claude | Host::Codex if kind == "deny" => json!({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
+                "permissionDecisionReason": message,
             }
         }),
-        Host::Cursor => {
-            json!({ "permission": "deny", "user_message": reason, "agent_message": reason })
+        Host::Claude | Host::Codex if kind == "report" => json!({
+            "decision": "block", "reason": message,
+            "hookSpecificOutput": { "hookEventName": "PostToolUse", "additionalContext": message }
+        }),
+        Host::Claude | Host::Codex => json!({
+            "hookSpecificOutput": { "hookEventName": "PostToolUse", "additionalContext": message }
+        }),
+        Host::Cursor if kind == "deny" => {
+            json!({ "permission": "deny", "user_message": message, "agent_message": message })
         }
+        Host::Cursor => json!({ "additional_context": message }),
     }
 }
 
@@ -303,7 +251,7 @@ fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
                 }
             }
             let key = match command.filter(|_| is_shell) {
-                Some(command) => command,
+                Some(command) => shell_key(&command, call),
                 None => other_key(&tool, call, input),
             };
             // The call already ran, so an error here cannot block it; it is reported.
@@ -338,11 +286,10 @@ fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
         if !refusals.is_empty() {
             return Ok(Outcome::Deny(reasons(&refusals)));
         }
-        watch::before(&root, session, &command, background)?;
+        let key = shell_key(&command, call);
+        watch::before(&root, session, &key, background)?;
         return Ok(Outcome::Allow);
-    } else if SAFE_TOOLS.contains(&tool.as_str()) {
-        return Ok(Outcome::Allow);
-    } else {
+    } else if EDIT_WORDS.iter().any(|word| tool.contains(word)) {
         let changes = proposals(&root, &cwd, &tool, input, payload)?;
         if changes.is_empty() {
             // A tool that lock cannot read, such as an MCP tool, is checked by what it
@@ -351,6 +298,9 @@ fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
             return Ok(Outcome::Allow);
         }
         changes
+    } else {
+        watch::before(&root, session, &other_key(&tool, call, input), false)?;
+        return Ok(Outcome::Allow);
     };
     let refusals = judge_all(&root, &changes)?;
     if refusals.is_empty() {
@@ -408,6 +358,10 @@ fn other_key(tool: &str, call: Option<&str>, input: &Value) -> String {
         Some(call) => format!("tool {tool} {call}"),
         None => format!("tool {tool} {input}"),
     }
+}
+
+fn shell_key(command: &str, call: Option<&str>) -> String {
+    call.map_or_else(|| command.to_string(), |id| format!("{command}\n{id}"))
 }
 
 fn judge_all(root: &Path, changes: &[Change]) -> Result<Vec<Refusal>, String> {
@@ -696,7 +650,7 @@ fn judge(root: &Path, change: &Change) -> Result<Option<Refusal>, String> {
         )));
     }
 
-    let records = disk_approvals(root)?;
+    let records = disk_approvals(root, Some(path))?;
     let mut blocked: Vec<Ask> = Vec::new();
     if whole_file {
         let from = before.map(|text| hash(text.as_bytes()));

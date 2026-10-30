@@ -3,14 +3,13 @@
 //! agent cannot approve its own change.
 
 use crate::pending::{self, Pending};
-use crate::regions::{hash, regions};
-use crate::repo::{APPROVALS, View, WHOLE_FILE, git_text, violations};
+use crate::regions::hash;
+use crate::repo::{APPROVALS, View, WHOLE_FILE, git_text, lock_state, utc_time, violations};
 use serde_json::json;
 use std::fs;
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::Path;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 struct Candidate {
     path: String,
@@ -24,15 +23,7 @@ struct Candidate {
 
 /// The lock's current state on disk, to tell whether a pending proposal still applies.
 fn current(root: &Path, path: &str, id: &str) -> Option<String> {
-    let bytes = fs::read(root.join(path)).ok()?;
-    if id == WHOLE_FILE {
-        return Some(hash(&bytes));
-    }
-    regions(path, &crate::regions::decode(&bytes).0)
-        .ok()?
-        .into_iter()
-        .find(|region| region.id == id)
-        .map(|region| region.hash)
+    lock_state(path, id, &fs::read(root.join(path)).ok()?)
 }
 
 fn candidates(root: &Path) -> Result<Vec<Candidate>, String> {
@@ -97,31 +88,6 @@ fn show_diff(candidate: &Candidate) {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// UTC time as `YYYY-MM-DDTHH:MM:SSZ`.
-fn now() -> String {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let (days, rest) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
-    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        rest / 3_600,
-        rest % 3_600 / 60,
-        rest % 60
-    )
-}
-
 /// Writes one approval record and returns its path from the repository root.
 pub fn record(
     root: &Path,
@@ -140,7 +106,7 @@ pub fn record(
         "before": before,
         "after": after,
         "approvedBy": format!("{name} <{email}>"),
-        "approvedAt": now(),
+        "approvedAt": utc_time(),
         "reason": reason,
     });
     let slug = if id == WHOLE_FILE {
@@ -183,7 +149,7 @@ pub fn run(root: &Path, filters: &[String], reason: Option<&str>) -> Result<i32,
         );
     }
     // Only records that HEAD does not have yet count, as in the hook and the commit check.
-    let records = crate::repo::disk_approvals(root)?;
+    let records = crate::repo::disk_approvals(root, None)?;
     let mut list: Vec<Candidate> = candidates(root)?
         .into_iter()
         .filter(|item| {

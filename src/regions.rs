@@ -78,17 +78,21 @@ fn marker(line: &str, openers: &[&str]) -> Option<(String, bool)> {
 /// SHA-256 of the text with line endings normalized, so a checkout with CRLF and one
 /// with LF agree.
 pub fn hash(bytes: &[u8]) -> String {
-    let mut normalized = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+    let digest = if bytes.contains(&0) {
+        Sha256::digest(bytes)
+    } else {
+        let mut normalized = Vec::with_capacity(bytes.len());
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+                index += 1;
+                continue;
+            }
+            normalized.push(bytes[index]);
             index += 1;
-            continue;
         }
-        normalized.push(bytes[index]);
-        index += 1;
-    }
-    let digest = Sha256::digest(&normalized);
+        Sha256::digest(&normalized)
+    };
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 

@@ -6,13 +6,12 @@
 //! runs only after the person chose yes, so a ticket that meets its edit on disk is a
 //! person's approval.
 
-use crate::regions::{hash, regions};
-use crate::repo::{WHOLE_FILE, git_dir};
+use crate::regions::hash;
+use crate::repo::{WHOLE_FILE, epoch_seconds, git_dir, lock_state};
 use crate::{approve, pending, watch};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// One locked change in a tool call, as fingerprints before and after.
 pub struct Ask {
@@ -37,13 +36,6 @@ fn refused(root: &Path) -> PathBuf {
 
 fn ticket(root: &Path, call: &str) -> PathBuf {
     tickets(root).join(format!("{}.json", &hash(call.as_bytes())[..16]))
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 /// Whether a question from the hook reaches a person. A `PermissionRequest` hook can
@@ -195,15 +187,18 @@ pub fn retried(root: &Path, session: &str, asks: &[Ask]) -> Result<bool, String>
         return Ok(true);
     }
     fs::create_dir_all(refused(root)).map_err(|error| error.to_string())?;
-    fs::write(&mark, format!("{:#}\n", json!({ "created": now() })))
-        .map_err(|error| error.to_string())?;
+    fs::write(
+        &mark,
+        format!("{:#}\n", json!({ "created": epoch_seconds() })),
+    )
+    .map_err(|error| error.to_string())?;
     Ok(false)
 }
 
 pub fn save(root: &Path, session: &str, call: &str, asks: &[Ask]) -> Result<(), String> {
     let record = json!({
         "session": session,
-        "created": now(),
+        "created": epoch_seconds(),
         "asks": asks.iter().map(|ask| json!({
             "path": ask.path,
             "id": ask.id,
@@ -217,16 +212,7 @@ pub fn save(root: &Path, session: &str, call: &str, asks: &[Ask]) -> Result<(), 
 
 /// A lock's state on disk, fingerprinted the way the hook fingerprints a proposal.
 fn state(root: &Path, path: &str, id: &str) -> Option<String> {
-    let bytes = fs::read(root.join(path)).ok()?;
-    let text = crate::regions::decode(&bytes).0.replace("\r\n", "\n");
-    if id == WHOLE_FILE {
-        return Some(hash(text.as_bytes()));
-    }
-    regions(path, &text)
-        .ok()?
-        .into_iter()
-        .find(|region| region.id == id)
-        .map(|region| region.hash)
+    lock_state(path, id, &fs::read(root.join(path)).ok()?)
 }
 
 /// After an edit ran: records each change that the person approved in the prompt. A
@@ -293,7 +279,7 @@ pub fn prune(root: &Path, session: &str) {
                 .as_ref()
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
-            if mine || now().saturating_sub(created) > STALE_SECONDS {
+            if mine || epoch_seconds().saturating_sub(created) > STALE_SECONDS {
                 let _ = fs::remove_file(entry.path());
             }
         }

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.2 - October 30, 2026
+
+- An edit to a locked file is as fast as in 0.2 again. Since 0.3.0 it started two
+  git processes on every edit; now git runs only when an approval record names the
+  file.
+- A failure to list the locks stops the check instead of reading as a repository
+  without locks.
+- File names that git quotes, such as names with quotes or backslashes, are read
+  exactly, so locks in those files are enforced.
+- Two identical shell commands that run at the same time each get their own copy
+  of the locked files.
+- A whole-file lock on a binary file compares its bytes exactly, line endings
+  included.
+- The GitHub Action checks the downloaded binary against `SHA256SUMS`.
+- The check after a command reads HEAD from the git directory and runs git only
+  when HEAD moved.
+
 ## 0.3.1 - October 30, 2026
 
 - When an agent command moves or deletes a locked file, such as with `git mv`,

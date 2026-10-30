@@ -250,6 +250,41 @@ check "a command that rewrites the lock hook entry is undone" '! grep -q "\"time
 printf '[hooks.state.x]\ntrusted_hash = "sha256:1"\n' > "$CODEX_HOME/config.toml"
 expect "agent cannot remove a Codex hook trust record" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"'"$CDX"'/config.toml","content":"[hooks.state.x]\n"}}')"
 
+# 0.3.2 A
+# A name that git quotes. Windows does not allow a double quote in a file name, so
+# this check skips there (Git Bash would store a look-alike character instead).
+weird='src/we"ird name.ts'
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) windows=1;; *) windows=;; esac
+if [ -z "$windows" ] && printf '/* LOCKED: strange START */\nexport const strange = "keep";\n/* LOCKED: strange END */\n' > "$weird" 2>/dev/null && [ -f "$weird" ]; then
+  git add -- "$weird" && git commit -qm 'add unusual locked path' -- "$weird"
+  expect "unusual locked path edit is denied" deny "$(j '{"cwd":"ROOT","tool_name":"Edit","tool_input":{"file_path":"ROOT/src/we\u0022ird name.ts","old_string":"keep","new_string":"changed"}}')"
+  perl -pi -e 's/"keep"/"changed"/' "$weird"
+  "$LOCK" check >/dev/null 2>&1 && { fail=$((fail+1)); echo "FAIL unusual locked path check"; } || { pass=$((pass+1)); echo "ok   unusual locked path check"; }
+  git checkout -q -- "$weird"
+else
+  pass=$((pass+2)); echo "ok   unusual locked path (skipped on this OS)"
+fi
+
+keyed_hook() { printf '{"cwd":"%s","session_id":"keyed","hook_event_name":"%s","tool_name":"Bash","tool_use_id":"%s","tool_input":{"command":"%s"}}' "$ROOT" "$1" "$3" "$2" | "$LOCK" hook claude; }
+command='echo changed > tools/keyed.txt'
+tagline_before="$(grep tagline src/app.ts)"
+keyed_hook PreToolUse "$command" k1 >/dev/null
+keyed_hook PreToolUse "$command" k2 >/dev/null
+edit 's/tagline = "[^"]*"/tagline = "Changed by command."/' src/app.ts
+keyed_hook PostToolUse "$command" k1 >/dev/null
+check "distinct shell snapshots do not overwrite" '[ "$(grep tagline src/app.ts)" = "$tagline_before" ]'
+keyed_hook PostToolUse "$command" k2 >/dev/null
+
+cat > src/no-records.ts <<'EOF'
+/* LOCKED: no-records START */
+export const noRecords = "keep";
+/* LOCKED: no-records END */
+EOF
+git add -- src/no-records.ts && git commit -qm 'add lock without approvals' -- src/no-records.ts
+trace="$WORK/no-records.trace"
+printf '%s' "$(j '{"cwd":"ROOT","tool_name":"Edit","tool_input":{"file_path":"ROOT/src/no-records.ts","old_string":"keep","new_string":"changed"}}')" | env GIT_TRACE=1 "$LOCK" hook claude 2>"$trace" >/dev/null
+if ! grep -q 'trace:' "$trace"; then pass=$((pass+1)); echo "ok   no approval records starts no git"; else fail=$((fail+1)); echo "FAIL no approval records starts no git"; fi
+
 # Audit reproductions
 audit_base=$(git rev-parse HEAD)
 audit_reset() {
@@ -317,7 +352,7 @@ audit_reset
 cat > tools/disarm-hook.sh <<'EOF'
 #!/bin/sh
 hook=$(git rev-parse --git-path hooks)/pre-commit
-sed -i '2i exit 0' "$hook"
+perl -pi -e 'print "exit 0\n" if $. == 2' "$hook"
 EOF
 agent "sh tools/disarm-hook.sh" || true
 check "audit: A4c disarming the commit hook is stopped" '! grep -qx "exit 0" "$(git rev-parse --git-path hooks)/pre-commit"'
@@ -378,7 +413,7 @@ weird_hook PostToolUse >/dev/null
 check "audit: S1 dotted tool names keep the locked tagline" 'grep -q "tagline = \"Ship.\"" src/app.ts || grep -q "tagline = \"Pay for what you ship.\"" src/app.ts'
 
 audit_reset
-sed -i 's/"catalog.json"/".\/catalog.json"/' .locks/files.json
+perl -pi -e 's#"catalog.json"#"./catalog.json"#' .locks/files.json
 git add .locks/files.json; git commit -qm audit-dot-path
 expect "audit: S2 whole-file lock with ./ path is enforced" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/catalog.json","content":"{}"}}')"
 git checkout -q HEAD~1 -- .locks/files.json
@@ -397,6 +432,37 @@ git rm -qf src/mixed.ts && git commit -qm "remove mixed" --no-verify
 agent "git mv src/app.ts src/moved.ts"
 check "an agent's git mv of a locked file is undone and unstaged" '[ -f src/app.ts ] && [ -z "$(git status --porcelain -- src/app.ts)" ] && case "$out" in *"moved or deleted src/app.ts"*) true;; *) false;; esac'
 git rm -qf --cached src/moved.ts 2>/dev/null; rm -f src/moved.ts
+
+# 0.3.2 B
+echo "printf '%s\\n' '/* LOCKED: new-start START */' 'new' '/* LOCKED: new-start END */' > src/new-lock.ts && git add -N src/new-lock.ts && perl -pi -e 's/^new$/changed/' src/new-lock.ts" > tools/intent-to-add.sh
+agent "sh tools/intent-to-add.sh"
+check "intent-to-add lock is not restored" 'grep -q "^changed$" src/new-lock.ts && "$LOCK" check >/dev/null'
+rm -f src/new-lock.ts tools/intent-to-add.sh
+
+echo "git rm -q src/app.ts && printf '%s\\n' '/* LOCKED: tagline START */' 'replacement' '/* LOCKED: tagline END */' > src/app.ts" > tools/untracked-replacement.sh
+agent "sh tools/untracked-replacement.sh"
+check "untracked replacement restores committed locked text" '! grep -q replacement src/app.ts'
+git checkout -q -- src/app.ts; rm -f tools/untracked-replacement.sh
+
+mkdir -p assets
+printf 'before\0binary\r\nend' > assets/blob.bin
+git add assets/blob.bin && git commit -qm binary-lock
+perl -pi -e 's#"catalog.json"#"catalog.json", "assets/blob.bin"#' .locks/files.json
+git add .locks/files.json && git commit -qm binary-lock-config
+echo "perl -pi -e 's/\r\n/\n/g' assets/blob.bin" > tools/binary-rewrite.sh
+agent "sh tools/binary-rewrite.sh"
+check "binary whole-file lock restores CRLF byte" 'od -An -tx1 assets/blob.bin | tr -d " \n" | grep -q "0062696e6172790d0a656e64"'
+git checkout -q HEAD~1 -- .locks/files.json; git add .locks/files.json; git commit -qm binary-lock-cleanup
+
+echo "git commit --allow-empty -qm head-read-loose" > tools/head-read.sh
+agent "sh tools/head-read.sh"
+check "HEAD is read without git after a commit" '[ -z "$out" ]'
+echo "git commit --allow-empty -qm head-read-packed && git pack-refs --all" > tools/head-read-packed.sh
+agent "sh tools/head-read-packed.sh"
+check "packed HEAD is read without git" '[ -z "$out" ]'
+rm -f tools/head-read.sh tools/head-read-packed.sh
+
+expect "a delete tool is refused up front on a locked file" deny "$(j '{"cwd":"ROOT","tool_name":"Delete","tool_input":{"file_path":"ROOT/CHANGELOG.md"}}')"
 
 # On a failure, show the agent settings, which several checks depend on.
 [ "$fail" -eq 0 ] || { echo "--- .claude/settings.json"; cat .claude/settings.json; }
