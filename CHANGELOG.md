@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1 - October 30, 2026
+
+- When an agent command moves or deletes a locked file, such as with `git mv`,
+  `lock` puts the file back and also unstages the move, so `git status` shows no
+  staged deletion. The agent is told that the move was undone and that any copy
+  it made at a new path is still there.
+
 ## 0.3.0 - October 30, 2026
 
 This release closes the gaps that an outside audit found in 0.2.1. Each one has a

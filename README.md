@@ -102,6 +102,7 @@ of four things:
 | Change locked text yourself | Edit it, run `lock approve` in your terminal, and commit | The approval goes into the same commit. A commit of locked text without an approval is refused. |
 | Let the agent change locked text | Ask for the change, and approve it when `lock` asks | Only the exact change that you approved goes through. |
 | Remove a lock | Delete the markers and approve that, or approve the agent's edit that deletes them | The lock is gone after the commit. |
+| Move or rename locked text | Move it, run `lock approve`, and commit | Moving counts as removing the locked text from the old path. Afterwards the lock lives at the new path. An agent's move is refused or undone. |
 
 ## Approve a change
 
@@ -308,7 +309,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dariodaddamio/lock@v0.3.0
+      - uses: dariodaddamio/lock@v0.3.1
 ```
 
 Second, make sure that a person reviews each approval before it reaches the main
