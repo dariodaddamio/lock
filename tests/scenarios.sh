@@ -352,7 +352,7 @@ audit_reset
 cat > tools/disarm-hook.sh <<'EOF'
 #!/bin/sh
 hook=$(git rev-parse --git-path hooks)/pre-commit
-sed -i '2i exit 0' "$hook"
+perl -pi -e 'print "exit 0\n" if $. == 2' "$hook"
 EOF
 agent "sh tools/disarm-hook.sh" || true
 check "audit: A4c disarming the commit hook is stopped" '! grep -qx "exit 0" "$(git rev-parse --git-path hooks)/pre-commit"'
@@ -413,7 +413,7 @@ weird_hook PostToolUse >/dev/null
 check "audit: S1 dotted tool names keep the locked tagline" 'grep -q "tagline = \"Ship.\"" src/app.ts || grep -q "tagline = \"Pay for what you ship.\"" src/app.ts'
 
 audit_reset
-sed -i 's/"catalog.json"/".\/catalog.json"/' .locks/files.json
+perl -pi -e 's#"catalog.json"#"./catalog.json"#' .locks/files.json
 git add .locks/files.json; git commit -qm audit-dot-path
 expect "audit: S2 whole-file lock with ./ path is enforced" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/catalog.json","content":"{}"}}')"
 git checkout -q HEAD~1 -- .locks/files.json
