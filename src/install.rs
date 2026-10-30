@@ -9,10 +9,15 @@ use std::path::Path;
 
 const HOME: &str = "https://github.com/dariodaddamio/lock";
 
-/// Exit code 2 is what makes Claude Code and Codex block the call, so a missing
-/// binary blocks edits instead of letting them through unchecked. At the end of a turn
-/// exit code 2 would keep the agent going, so that hook never uses it.
+/// Exit code 2 is what makes Claude Code block the call, so a missing binary blocks
+/// edits instead of letting them through unchecked. At the end of a turn exit code 2
+/// would keep the agent going, so that hook never uses it. Codex runs hooks in Windows
+/// PowerShell on Windows and in a POSIX shell elsewhere, so its command is the one
+/// form that both shells run.
 fn hook_command(host: &str, event: &str) -> String {
+    if host == "codex" {
+        return format!("lock hook {host}");
+    }
     if event == "Stop" {
         return format!("command -v lock >/dev/null 2>&1 && lock hook {host}; exit 0");
     }
@@ -72,11 +77,6 @@ fn agent_hooks(
             json!({ "hooks": [{ "type": "command", "command": hook_command(host, event) }] });
         if let Some(matcher) = matcher {
             entry["matcher"] = json!(matcher);
-        }
-        // On Windows, Codex runs `command_windows`, which may not be a POSIX shell, so
-        // that command has no shell syntax.
-        if host == "codex" {
-            entry["hooks"][0]["command_windows"] = json!(format!("lock hook {host}"));
         }
         // An entry from an older lock is brought up to date in place.
         match list.iter_mut().find(|existing| mentions_lock(existing)) {

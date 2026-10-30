@@ -41,9 +41,11 @@ pricing tagline." The agent puts two comment lines around the text, and from the
 on `lock` refuses every change to that text that you have not approved.
 
 Each agent asks you once before it runs hooks from a repository. Claude Code asks
-whether you trust the folder, Codex runs project hooks only in a trusted project
-and asks you to review new hooks, and Cursor reads `.cursor/hooks.json` when it
-opens the project.
+whether you trust the folder, Codex asks you to trust the folder and then to review
+the new hooks, and Cursor reads `.cursor/hooks.json` when it opens the project. An
+agent finds `lock` on the PATH that it had when it started, so restart an agent
+that was already running when you installed `lock`. Codex keeps a background
+server, which `codex app-server daemon restart` restarts.
 
 ## At a glance
 
@@ -77,8 +79,10 @@ repository:
 | `.git/hooks/pre-commit` | The commit check | No, because git does not share hooks. Each clone runs `lock install` once. |
 
 A teammate who clones the repository gets the agent hooks with it. Until they
-install `lock`, those hooks refuse every agent edit and tell the agent where to get
-`lock`, so nothing gets through unchecked. In a JavaScript project, a
+install `lock`, the Claude Code and Cursor hooks refuse every agent edit and tell
+the agent where to get `lock`. Codex lets a call through when its hook fails, so in
+Codex each call shows a failed hook instead, and CI catches the change. In a
+JavaScript project, a
 `"prepare": "lock install"` script in `package.json` sets up each clone on
 `npm install`.
 
@@ -188,8 +192,8 @@ configuration, or takes the hook out of the agent settings.
 The commit hook tells your edits from an agent's edits by when they happen. While
 an agent command runs, `lock` holds a copy of each locked file, so a change that is
 already in that copy was made before the command started and is yours. When the
-agent's turn ends, `lock` removes the copies. If `lock` is not installed or cannot
-check an edit, the hook refuses the edit instead of letting it through.
+agent's turn ends, `lock` removes the copies. If `lock` cannot check an edit, the
+hook refuses the edit instead of letting it through.
 
 ## Speed and size
 
