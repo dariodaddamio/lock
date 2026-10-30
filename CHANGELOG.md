@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 - October 30, 2026
+
+- On Windows, `lock` now recognizes an agent's settings file when its path is
+  written in the short form, such as `RUNNER~1`. Before, an agent could turn hooks
+  off in a settings file whose folder was given in that form.
+
 ## 0.2.0 - October 30, 2026
 
 This release closes the ways around `lock` that were known after 0.1.1.

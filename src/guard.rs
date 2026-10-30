@@ -53,8 +53,17 @@ pub fn external() -> Vec<(PathBuf, Kind)> {
     files
 }
 
+/// A path in one comparable form. Resolving it turns a Windows short name, such as
+/// `RUNNER~1`, into the long one; a file that does not exist yet is resolved through
+/// its folder.
 fn normal(path: &Path) -> String {
+    let resolved = std::fs::canonicalize(path).ok().or_else(|| {
+        let dir = std::fs::canonicalize(path.parent()?).ok()?;
+        Some(dir.join(path.file_name()?))
+    });
+    let path = resolved.as_deref().unwrap_or(path);
     let text = path.to_string_lossy().replace('\\', "/");
+    let text = text.strip_prefix("//?/").unwrap_or(&text).to_string();
     if cfg!(windows) {
         text.to_ascii_lowercase()
     } else {
