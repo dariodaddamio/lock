@@ -6,7 +6,7 @@
 //! are checked by `watch`, and agent settings by `guard`.
 
 use crate::ask::{self, Ask};
-use crate::paths::{eq, relative};
+use crate::paths::{eq, relative, under};
 use crate::regions::{hash, regions, supports_markers};
 use crate::repo::{
     APPROVALS, FILE_LOCKS, WHOLE_FILE, approved, disk_approvals, find_root, parse_file_locks,
@@ -195,7 +195,7 @@ fn note(host: Host, message: &str) -> Value {
     }
 }
 
-fn deny(host: Host, reason: &str) -> Value {
+pub(crate) fn deny(host: Host, reason: &str) -> Value {
     match host {
         Host::Claude | Host::Codex => json!({
             "hookSpecificOutput": {
@@ -256,10 +256,8 @@ fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
     let call = text(payload, &["tool_use_id"]);
     let tool = text(payload, &["tool_name", "toolName"])
         .unwrap_or_default()
-        .rsplit('.')
-        .next()
-        .unwrap_or_default()
         .to_ascii_lowercase();
+    let tool = tool.strip_prefix("functions.").unwrap_or(&tool).to_string();
     let input = payload
         .get("tool_input")
         .or_else(|| payload.get("arguments"))
@@ -441,7 +439,7 @@ fn normalized(text: &str) -> String {
 fn read(root: &Path, path: &str) -> Option<String> {
     fs::read(root.join(path))
         .ok()
-        .map(|bytes| normalized(&String::from_utf8_lossy(&bytes)))
+        .map(|bytes| normalized(&crate::regions::decode(&bytes).0))
 }
 
 /// Applies one exact replacement the way the edit tools do. An edit that does not
@@ -646,7 +644,7 @@ fn judge(root: &Path, change: &Change) -> Result<Option<Refusal>, String> {
         return Ok(None);
     }
 
-    if path == ".locks" || path.starts_with(".locks/") {
+    if under(path, ".locks") {
         if eq(path, FILE_LOCKS)
             && let Some(after) = after
         {
@@ -665,7 +663,7 @@ fn judge(root: &Path, change: &Change) -> Result<Option<Refusal>, String> {
                     .join(", ")
             )));
         }
-        if path.starts_with(APPROVALS) {
+        if under(path, APPROVALS) {
             return Ok(Refusal::hard(format!(
                 "lock: {path} is an approval record. Only a person writes approvals, with `lock approve` or in the permission prompt."
             )));

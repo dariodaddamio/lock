@@ -93,18 +93,35 @@ pub fn hash(bytes: &[u8]) -> String {
 }
 
 /// Every region in one file, in order.
-pub fn regions(path: &str, source: &str) -> Result<Vec<Region>, String> {
-    let openers = openers(path);
-    if openers.is_empty() || !source.contains("LOCKED:") {
-        return Ok(Vec::new());
+/// File bytes as text without losing any byte. Valid UTF-8 is read as UTF-8. Anything
+/// else is read one byte per character, so two different byte sequences never look
+/// the same, and `encode` turns the text back into the same bytes. Returns whether
+/// the bytes were read one per character.
+pub fn decode(bytes: &[u8]) -> (String, bool) {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => (text.to_string(), false),
+        Err(_) => (bytes.iter().map(|&byte| char::from(byte)).collect(), true),
     }
+}
+
+/// The bytes of text that `decode` produced.
+pub fn encode(text: &str, bytewise: bool) -> Vec<u8> {
+    if bytewise {
+        text.chars().map(|c| c as u32 as u8).collect()
+    } else {
+        text.as_bytes().to_vec()
+    }
+}
+
+/// Each region as its id and its first and last row, with rows split on `\n`.
+fn spans(path: &str, rows: &[&str]) -> Result<Vec<(String, usize, usize)>, String> {
+    let openers = openers(path);
     let markup = is_markup(path);
-    let source = source.replace("\r\n", "\n");
-    let rows: Vec<&str> = source.split('\n').collect();
-    let mut found: Vec<Region> = Vec::new();
+    let mut found: Vec<(String, usize, usize)> = Vec::new();
     let mut open: Option<(String, usize)> = None;
     let mut fenced = false;
     for (index, row) in rows.iter().enumerate() {
+        let row = row.strip_suffix('\r').unwrap_or(row);
         if markup {
             let trimmed = row.trim_start();
             if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
@@ -121,18 +138,14 @@ pub fn regions(path: &str, source: &str) -> Result<Vec<Region>, String> {
             if let Some((outer, _)) = &open {
                 return Err(format!("{path}: LOCKED {id} starts inside {outer}"));
             }
-            if found.iter().any(|region| region.id == id) {
+            if found.iter().any(|(seen, _, _)| *seen == id) {
                 return Err(format!("{path}: LOCKED {id} appears twice"));
             }
             open = Some((id, index));
             continue;
         }
         match open.take() {
-            Some((open_id, first)) if open_id == id => {
-                let text = rows[first..=index].join("\n");
-                let hash = hash(text.as_bytes());
-                found.push(Region { id, text, hash });
-            }
+            Some((open_id, first)) if open_id == id => found.push((id, first, index)),
             _ => return Err(format!("{path}: LOCKED {id} END has no matching START")),
         }
     }
@@ -140,4 +153,63 @@ pub fn regions(path: &str, source: &str) -> Result<Vec<Region>, String> {
         return Err(format!("{path}: LOCKED {id} has no END"));
     }
     Ok(found)
+}
+
+pub fn regions(path: &str, source: &str) -> Result<Vec<Region>, String> {
+    if openers(path).is_empty() || !source.contains("LOCKED:") {
+        return Ok(Vec::new());
+    }
+    let source = source.replace("\r\n", "\n");
+    let rows: Vec<&str> = source.split('\n').collect();
+    Ok(spans(path, &rows)?
+        .into_iter()
+        .map(|(id, first, last)| {
+            let text = rows[first..=last].join(
+                "
+",
+            );
+            let hash = hash(text.as_bytes());
+            Region { id, text, hash }
+        })
+        .collect())
+}
+
+/// Copies the regions named in `ids` from `from` into `into`, byte for byte, and
+/// leaves every other byte of `into` as it is, line endings included. Returns `None`
+/// when that is not possible, such as when a marker is broken, a region is missing,
+/// or the two versions are not decoded the same way; the caller then restores the
+/// whole file.
+pub fn splice(path: &str, from: &[u8], into: &[u8], ids: &[&str]) -> Option<Vec<u8>> {
+    let (old, old_bytewise) = decode(from);
+    let (new, new_bytewise) = decode(into);
+    if old_bytewise != new_bytewise {
+        return None;
+    }
+    let offsets = |text: &str| -> Vec<usize> {
+        let mut starts = vec![0];
+        starts.extend(text.match_indices('\n').map(|(at, _)| at + 1));
+        starts
+    };
+    let old_rows: Vec<&str> = old.split('\n').collect();
+    let new_rows: Vec<&str> = new.split('\n').collect();
+    let (old_spans, new_spans) = (spans(path, &old_rows).ok()?, spans(path, &new_rows).ok()?);
+    let (old_at, new_at) = (offsets(&old), offsets(&new));
+    // The byte range of rows first..=last, without the newline after the last row.
+    let range = |at: &[usize], rows: &[&str], first: usize, last: usize| {
+        (at[first], at[last] + rows[last].len())
+    };
+    let mut edits = Vec::new();
+    for id in ids {
+        let (_, first, last) = old_spans.iter().find(|(seen, _, _)| seen == id)?;
+        let (_, to_first, to_last) = new_spans.iter().find(|(seen, _, _)| seen == id)?;
+        let (from_start, from_end) = range(&old_at, &old_rows, *first, *last);
+        let (to_start, to_end) = range(&new_at, &new_rows, *to_first, *to_last);
+        edits.push((to_start, to_end, &old[from_start..from_end]));
+    }
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.0));
+    let mut text = new.clone();
+    for (start, end, replacement) in edits {
+        text.replace_range(start..end, replacement);
+    }
+    Some(encode(&text, new_bytewise))
 }

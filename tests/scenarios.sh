@@ -250,6 +250,148 @@ check "a command that rewrites the lock hook entry is undone" '! grep -q "\"time
 printf '[hooks.state.x]\ntrusted_hash = "sha256:1"\n' > "$CODEX_HOME/config.toml"
 expect "agent cannot remove a Codex hook trust record" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"'"$CDX"'/config.toml","content":"[hooks.state.x]\n"}}')"
 
+# Audit reproductions
+audit_base=$(git rev-parse HEAD)
+audit_reset() {
+  git reset -q --hard "$audit_base" 2>/dev/null || true
+  git checkout -q -- src/app.ts .locks/files.json 2>/dev/null || true
+  rm -f tools/forge-commit.sh tools/remove-lock-state.sh tools/fake-merge.sh tools/disarm-hook.sh tools/skip-hook.sh tools/rewrite-again.sh tools/latin-rewrite.sh
+  rm -rf linkdir
+  rm -f src/latin.ts .locks/approvals/audit-*.json
+  rm -f "$(git rev-parse --git-dir)/MERGE_HEAD"
+  rm -rf "$(git rev-parse --git-dir)/lock"
+}
+
+audit_reset
+# A1 matters only where the file system ignores case; elsewhere .LOCKS is another folder.
+touch .case-probe; if [ -e .CASE-PROBE ]; then
+expect "audit: A1 case-folded .locks path is refused" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.LOCKS/approvals/x.json","content":"{}"}}')"
+expect "audit: A1 case-folded Claude settings path is refused" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.CLAUDE/settings.json","content":"{}"}}')"
+else pass=$((pass+2)); echo "ok   audit: A1 case-folded paths (skipped on this OS)"; fi; rm -f .case-probe
+
+audit_reset
+agent "ln -s .locks/approvals linkdir" || true
+if [ -L linkdir ]; then
+  expect "audit: A2 symlinked lock path is refused" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/linkdir/forged.json","content":"{}"}}')"
+  rm -f linkdir
+else
+  rm -rf linkdir
+  pass=$((pass+1)); echo "ok   audit: A2 symlinked lock path is refused (skipped on this OS)"
+fi
+
+audit_reset
+cat > tools/forge-commit.sh <<'EOF'
+#!/bin/sh
+perl -pi -e 's/Pay for what you ship\./Forged./; s/Ship\./Forged./' src/app.ts
+region() { sed -n '/LOCKED: tagline START/,/LOCKED: tagline END/p' | tr -d '\r'; }
+from=$(git show HEAD:src/app.ts | region | sha256sum | cut -c1-64)
+to=$(region < src/app.ts | sha256sum | cut -c1-64)
+printf '{"version":1,"path":"src/app.ts","id":"tagline","before":"%s","after":"%s"}\n' "$from" "$to" > .locks/approvals/audit-forged.json
+git add -A && git commit -qm forged
+EOF
+chmod +x tools/forge-commit.sh
+head=$(git rev-parse HEAD)
+agent "sh tools/forge-commit.sh" || true
+check "audit: A3 forge and commit in one command is stopped" '[ "$(git rev-parse HEAD)" = "$head" ] || ! git show HEAD:src/app.ts 2>/dev/null | grep -q "tagline = \"Forged.\""; grep -q "tagline = \"Ship.\"" src/app.ts || grep -q "tagline = \"Pay for what you ship.\"" src/app.ts'
+
+audit_reset
+cat > tools/remove-lock-state.sh <<'EOF'
+#!/bin/sh
+perl -pi -e 's/Ship\./Deleted state./' src/app.ts
+rm -rf "$(git rev-parse --git-dir)/lock"
+EOF
+agent "sh tools/remove-lock-state.sh" || true
+check "audit: A4a deleting lock state is stopped" 'grep -q "tagline = \"Ship.\"" src/app.ts || grep -q "tagline = \"Pay for what you ship.\"" src/app.ts'
+
+audit_reset
+cat > tools/fake-merge.sh <<'EOF'
+#!/bin/sh
+perl -pi -e 's/Ship\./Fake merge./' src/app.ts
+: > "$(git rev-parse --git-dir)/MERGE_HEAD"
+EOF
+agent "sh tools/fake-merge.sh" || true
+check "audit: A4b faking a merge is stopped" 'grep -q "tagline = \"Ship.\"" src/app.ts || grep -q "tagline = \"Pay for what you ship.\"" src/app.ts'
+rm -f "$(git rev-parse --git-dir)/MERGE_HEAD"
+
+audit_reset
+cat > tools/disarm-hook.sh <<'EOF'
+#!/bin/sh
+hook=$(git rev-parse --git-path hooks)/pre-commit
+sed -i '2i exit 0' "$hook"
+EOF
+agent "sh tools/disarm-hook.sh" || true
+check "audit: A4c disarming the commit hook is stopped" '! grep -qx "exit 0" "$(git rev-parse --git-path hooks)/pre-commit"'
+
+audit_reset
+cat > tools/skip-hook.sh <<'EOF'
+#!/bin/sh
+perl -pi -e 's/Ship\./Skipped hook./' src/app.ts
+git commit -qam skip --no-verify
+EOF
+agent "sh tools/skip-hook.sh" || true
+check "audit: A4d skipping the commit hook is stopped" '! git show HEAD:src/app.ts 2>/dev/null | grep -q "tagline = \"Skipped hook.\""'
+
+audit_reset
+base=$(git rev-parse HEAD)
+edit 's/Ship\./Replay one./' src/app.ts
+approve_region src/app.ts tagline
+git add -A; git commit -qm audit-v1
+edit 's/Replay one\./Ship./' src/app.ts
+approve_region src/app.ts tagline
+git add -A; git commit -qm audit-v0
+git checkout -q -- src/app.ts
+expect "audit: A5 approval replay is refused" deny "$(j '{"cwd":"ROOT","tool_name":"Edit","tool_input":{"file_path":"ROOT/src/app.ts","old_string":"Ship.","new_string":"Replay one."}}')"
+git reset -q --hard "$base"
+
+audit_reset
+printf '/* LOCKED: bytes START */\nconst s = "caf\351";\n/* LOCKED: bytes END */\nconst marker = "\377";\n' > src/latin.ts
+git add src/latin.ts; git commit -qm audit-latin
+cat > tools/latin-rewrite.sh <<'EOF'
+#!/bin/sh
+LC_ALL=C perl -pi -e 's/\xe9/\xe8/g' src/latin.ts
+EOF
+agent "sh tools/latin-rewrite.sh" || true
+check "audit: A6 non-UTF-8 locked bytes are restored" 'LC_ALL=C od -An -tx1 src/latin.ts | tr -d " \n" | grep -q e9 && LC_ALL=C od -An -tx1 src/latin.ts | tr -d " \n" | grep -q ff'
+git rm -q -f src/latin.ts; git commit -qm audit-latin-cleanup
+
+audit_reset
+mkdir -p "$CLAUDE_CONFIG_DIR"
+printf '{"disableAllHooks": false}\n' > "$CLAUDE_CONFIG_DIR/settings.json"
+expect "audit: C3 flipping disableAllHooks is refused" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"'"$CFG"'/settings.json","content":"{\u0022disableAllHooks\u0022: true}"}}')"
+rm -f "$CLAUDE_CONFIG_DIR/settings.json"
+
+audit_reset
+echo 'perl -pi -e '\''s/Ship\./Repeated command./'\'' src/app.ts' > tools/rewrite-again.sh
+hook PreToolUse "sh tools/rewrite-again.sh" >/dev/null
+hook PreToolUse "sh tools/rewrite-again.sh" >/dev/null
+sh tools/rewrite-again.sh
+hook PostToolUse "sh tools/rewrite-again.sh" >/dev/null
+check "audit: C1 identical commands keep the locked tagline" 'grep -q "tagline = \"Ship.\"" src/app.ts || grep -q "tagline = \"Pay for what you ship.\"" src/app.ts'
+
+check "audit: C5 invalid baseline is rejected" '! "$LOCK" check --base no-such-ref >/dev/null 2>&1'
+
+audit_reset
+weird_hook() { printf '{"cwd":"%s","session_id":"audit-s1","hook_event_name":"%s","tool_name":"x.read","tool_use_id":"audit-x1","tool_input":{}}' "$ROOT" "$1" | "$LOCK" hook claude; }
+weird_hook PreToolUse >/dev/null
+edit 's/Ship\./Dotted tool./' src/app.ts
+weird_hook PostToolUse >/dev/null
+check "audit: S1 dotted tool names keep the locked tagline" 'grep -q "tagline = \"Ship.\"" src/app.ts || grep -q "tagline = \"Pay for what you ship.\"" src/app.ts'
+
+audit_reset
+sed -i 's/"catalog.json"/".\/catalog.json"/' .locks/files.json
+git add .locks/files.json; git commit -qm audit-dot-path
+expect "audit: S2 whole-file lock with ./ path is enforced" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/catalog.json","content":"{}"}}')"
+git checkout -q HEAD~1 -- .locks/files.json
+git add .locks/files.json; git commit -qm audit-dot-path-cleanup
+
+# Mixed line endings: putting locked text back changes only the locked bytes.
+printf 'a = 1\r\n/* LOCKED: mixed START */\r\nconst m = "keep";\r\n/* LOCKED: mixed END */\r\nb = 2\n' > src/mixed.ts
+git add src/mixed.ts && git commit -qm mixed --no-verify
+echo "perl -pi -e 's/\"keep\"/\"changed\"/; s/b = 2/b = 3/' src/mixed.ts" > tools/mixed.sh
+agent "sh tools/mixed.sh"
+check "a put-back keeps the file's other bytes and line endings" 'grep -q "\"keep\"" src/mixed.ts && [ "$(tail -c 6 src/mixed.ts | od -An -c | tr -d " ")" = "b=3\n" ] && [ "$(tr -cd "\r" < src/mixed.ts | wc -c | tr -d " ")" = 4 ]'
+git rm -qf src/mixed.ts && git commit -qm "remove mixed" --no-verify
+
 # On a failure, show the agent settings, which several checks depend on.
 [ "$fail" -eq 0 ] || { echo "--- .claude/settings.json"; cat .claude/settings.json; }
 echo "passed $pass, failed $fail"

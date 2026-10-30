@@ -1,6 +1,7 @@
 //! Locks and approvals as git sees them: in a commit, in the index, or in the
 //! working tree.
 
+use crate::paths::eq;
 use crate::regions::{self, hash};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet, VecDeque};
@@ -203,8 +204,26 @@ pub fn parse_file_locks(bytes: Option<&[u8]>) -> Result<Vec<String>, String> {
         .iter()
         .map(|item| {
             item.as_str()
-                .map(|path| path.replace('\\', "/"))
+                .map(|path| {
+                    let original = path.to_string();
+                    let mut parts = Vec::new();
+                    let normalized = path.replace('\\', "/");
+                    for part in normalized.split('/') {
+                        match part {
+                            "" | "." => {}
+                            ".." if parts.pop().is_none() => {
+                                return Err(format!(
+                                    "{FILE_LOCKS} lists escaping path entry {original}"
+                                ));
+                            }
+                            ".." => {}
+                            part => parts.push(part),
+                        }
+                    }
+                    Ok(parts.join("/"))
+                })
                 .ok_or_else(|| format!("{FILE_LOCKS} lists something that is not a path"))
+                .and_then(|path| path)
         })
         .collect()
 }
@@ -225,7 +244,7 @@ pub fn inventory(root: &Path, view: &View) -> Result<Locks, String> {
 fn locks_in(root: &Path, view: &View, paths: &[String], whole: &[String]) -> Result<Locks, String> {
     let mut map = BTreeMap::new();
     for (path, bytes) in paths.iter().zip(view.read_all(root, paths)) {
-        if whole.contains(path) {
+        if whole.iter().any(|locked| eq(locked, path)) {
             map.insert(
                 (path.clone(), WHOLE_FILE.to_string()),
                 Entry {
@@ -243,7 +262,7 @@ fn locks_in(root: &Path, view: &View, paths: &[String], whole: &[String]) -> Res
         let Some(bytes) = bytes.filter(|bytes| !bytes.contains(&0)) else {
             continue;
         };
-        let text = String::from_utf8_lossy(&bytes);
+        let (text, _) = regions::decode(&bytes);
         for region in regions::regions(path, &text)? {
             map.insert(
                 (path.clone(), region.id.clone()),
@@ -281,11 +300,28 @@ pub fn parse_approval(name: &str, bytes: &[u8]) -> Result<Approval, String> {
     })
 }
 
-pub fn approvals(root: &Path, view: &View) -> Result<Vec<Approval>, String> {
+fn approvals_since(root: &Path, view: &View, base: Option<&str>) -> Result<Vec<Approval>, String> {
+    // A record that the base already has was used by an earlier commit, so it cannot
+    // approve anything again. An error here must not let old records count.
+    let base_paths = match base {
+        Some(base) => Some(
+            git(
+                root,
+                &["ls-tree", "-r", "--name-only", base, "--", APPROVALS],
+            )
+            .map(|bytes| lines(&bytes).into_iter().collect::<HashSet<_>>())?,
+        ),
+        None => None,
+    };
     let paths: Vec<String> = view
         .files(root, APPROVALS)
         .into_iter()
         .filter(|path| path.ends_with(".json"))
+        .filter(|path| {
+            base_paths
+                .as_ref()
+                .is_none_or(|paths| !paths.contains(path))
+        })
         .collect();
     paths
         .iter()
@@ -295,8 +331,19 @@ pub fn approvals(root: &Path, view: &View) -> Result<Vec<Approval>, String> {
         .collect()
 }
 
-/// Approvals in the working tree, read straight from disk so the agent hook needs no git.
+/// Approvals in the working tree that `HEAD` does not have yet. A committed record was
+/// used by that commit, so it cannot approve a change again. Before the first commit
+/// every record counts.
 pub fn disk_approvals(root: &Path) -> Result<Vec<Approval>, String> {
+    let tracked = if git(root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok() {
+        git(
+            root,
+            &["ls-tree", "-r", "--name-only", "HEAD", "--", APPROVALS],
+        )
+        .map(|bytes| lines(&bytes).into_iter().collect::<HashSet<_>>())?
+    } else {
+        HashSet::new()
+    };
     let Ok(dir) = fs::read_dir(root.join(APPROVALS)) else {
         return Ok(Vec::new());
     };
@@ -304,6 +351,10 @@ pub fn disk_approvals(root: &Path) -> Result<Vec<Approval>, String> {
     for item in dir.flatten() {
         let name = item.file_name().to_string_lossy().into_owned();
         if !name.ends_with(".json") {
+            continue;
+        }
+        let path = format!("{APPROVALS}/{name}");
+        if tracked.contains(&path) {
             continue;
         }
         let bytes = fs::read(item.path()).map_err(|error| format!("{name}: {error}"))?;
@@ -389,7 +440,7 @@ pub fn violations(root: &Path, target: &View, base: &str) -> Result<Vec<Violatio
     let baseline = locks_in(root, &base_view, &changed, &base_whole)?;
     let target_whole = parse_file_locks(target.read(root, FILE_LOCKS).as_deref())?;
     let current = locks_in(root, target, &changed, &target_whole)?;
-    let records = approvals(root, target)?;
+    let records = approvals_since(root, target, Some(base))?;
     let mut problems = Vec::new();
     for (key, before) in baseline {
         let after = current.get(&key).cloned();

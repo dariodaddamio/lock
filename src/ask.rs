@@ -218,7 +218,7 @@ pub fn save(root: &Path, session: &str, call: &str, asks: &[Ask]) -> Result<(), 
 /// A lock's state on disk, fingerprinted the way the hook fingerprints a proposal.
 fn state(root: &Path, path: &str, id: &str) -> Option<String> {
     let bytes = fs::read(root.join(path)).ok()?;
-    let text = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
+    let text = crate::regions::decode(&bytes).0.replace("\r\n", "\n");
     if id == WHOLE_FILE {
         return Some(hash(text.as_bytes()));
     }

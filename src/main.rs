@@ -99,9 +99,9 @@ fn run(args: &[String]) -> Result<i32, String> {
     let rest = args.get(1..).unwrap_or_default();
     match args.first().map(String::as_str) {
         Some("hook") => match rest.first().map(String::as_str) {
-            Some("claude") => Ok(hook::run(hook::Host::Claude)),
-            Some("codex") => Ok(hook::run(hook::Host::Codex)),
-            Some("cursor") => Ok(hook::run(hook::Host::Cursor)),
+            Some("claude") => hook_run(hook::Host::Claude),
+            Some("codex") => hook_run(hook::Host::Codex),
+            Some("cursor") => hook_run(hook::Host::Cursor),
             _ => Err("lock hook needs a host: claude, codex, or cursor".into()),
         },
         Some("check") => check(rest),
@@ -135,6 +135,19 @@ fn run(args: &[String]) -> Result<i32, String> {
             Ok(0)
         }
         Some(other) => Err(format!("unknown command `{other}`\n{USAGE}")),
+    }
+}
+
+fn hook_run(host: hook::Host) -> Result<i32, String> {
+    match std::panic::catch_unwind(|| hook::run(host)) {
+        Ok(code) => Ok(code),
+        Err(_) => {
+            println!(
+                "{}",
+                hook::deny(host, "lock panicked while checking this tool call")
+            );
+            Ok(2)
+        }
     }
 }
 
