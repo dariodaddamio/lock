@@ -447,7 +447,7 @@ git checkout -q -- src/app.ts; rm -f tools/untracked-replacement.sh
 mkdir -p assets
 printf 'before\0binary\r\nend' > assets/blob.bin
 git add assets/blob.bin && git commit -qm binary-lock
-sed -i 's#"catalog.json"#"catalog.json", "assets/blob.bin"#' .locks/files.json
+perl -pi -e 's#"catalog.json"#"catalog.json", "assets/blob.bin"#' .locks/files.json
 git add .locks/files.json && git commit -qm binary-lock-config
 echo "perl -pi -e 's/\r\n/\n/g' assets/blob.bin" > tools/binary-rewrite.sh
 agent "sh tools/binary-rewrite.sh"
