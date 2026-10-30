@@ -193,7 +193,7 @@ out="$(call default PreToolUse t3 'Ship.' 'Ship today.')"
 edit 's/"Ship\."/"Ship today."/' src/app.ts
 out="$(call default PostToolUse t3 'Ship.' 'Ship today.')"
 check "a yes is recorded after the edit" 'case "$out" in *approved*) true;; *) false;; esac && "$LOCK" check >/dev/null'
-expect "agent cannot add a hook that answers prompts" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.claude/settings.json","content":"{\u0022a\u0022: \u0022lock hook lock hook lock hook lock hook\u0022, \u0022PermissionRequest\u0022: []}"}}')"
+expect "agent cannot add a hook that answers prompts" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.claude/settings.json","content":"{\u0022a\u0022: \u0022lock hook lock hook lock hook lock hook\u0022\u002c \u0022PermissionRequest\u0022: []}"}}')"
 
 # On a failure, show the agent settings, which several checks depend on.
 [ "$fail" -eq 0 ] || { echo "--- .claude/settings.json"; cat .claude/settings.json; }
