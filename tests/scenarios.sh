@@ -250,6 +250,41 @@ check "a command that rewrites the lock hook entry is undone" '! grep -q "\"time
 printf '[hooks.state.x]\ntrusted_hash = "sha256:1"\n' > "$CODEX_HOME/config.toml"
 expect "agent cannot remove a Codex hook trust record" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"'"$CDX"'/config.toml","content":"[hooks.state.x]\n"}}')"
 
+# 0.3.2 A
+# A name that git quotes. Windows does not allow a double quote in a file name, so
+# this check skips there (Git Bash would store a look-alike character instead).
+weird='src/we"ird name.ts'
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) windows=1;; *) windows=;; esac
+if [ -z "$windows" ] && printf '/* LOCKED: strange START */\nexport const strange = "keep";\n/* LOCKED: strange END */\n' > "$weird" 2>/dev/null && [ -f "$weird" ]; then
+  git add -- "$weird" && git commit -qm 'add unusual locked path' -- "$weird"
+  expect "unusual locked path edit is denied" deny "$(j '{"cwd":"ROOT","tool_name":"Edit","tool_input":{"file_path":"ROOT/src/we"ird name.ts","old_string":"keep","new_string":"changed"}}')"
+  perl -pi -e 's/"keep"/"changed"/' "$weird"
+  "$LOCK" check >/dev/null 2>&1 && { fail=$((fail+1)); echo "FAIL unusual locked path check"; } || { pass=$((pass+1)); echo "ok   unusual locked path check"; }
+  git checkout -q -- "$weird"
+else
+  pass=$((pass+2)); echo "ok   unusual locked path (skipped on this OS)"
+fi
+
+keyed_hook() { printf '{"cwd":"%s","session_id":"keyed","hook_event_name":"%s","tool_name":"Bash","tool_use_id":"%s","tool_input":{"command":"%s"}}' "$ROOT" "$1" "$3" "$2" | "$LOCK" hook claude; }
+command='echo changed > tools/keyed.txt'
+tagline_before="$(grep tagline src/app.ts)"
+keyed_hook PreToolUse "$command" k1 >/dev/null
+keyed_hook PreToolUse "$command" k2 >/dev/null
+edit 's/tagline = "[^"]*"/tagline = "Changed by command."/' src/app.ts
+keyed_hook PostToolUse "$command" k1 >/dev/null
+check "distinct shell snapshots do not overwrite" '[ "$(grep tagline src/app.ts)" = "$tagline_before" ]'
+keyed_hook PostToolUse "$command" k2 >/dev/null
+
+cat > src/no-records.ts <<'EOF'
+/* LOCKED: no-records START */
+export const noRecords = "keep";
+/* LOCKED: no-records END */
+EOF
+git add -- src/no-records.ts && git commit -qm 'add lock without approvals' -- src/no-records.ts
+trace="$WORK/no-records.trace"
+printf '%s' "$(j '{"cwd":"ROOT","tool_name":"Edit","tool_input":{"file_path":"ROOT/src/no-records.ts","old_string":"keep","new_string":"changed"}}')" | env GIT_TRACE=1 "$LOCK" hook claude 2>"$trace" >/dev/null
+if ! grep -q 'trace:' "$trace"; then pass=$((pass+1)); echo "ok   no approval records starts no git"; else fail=$((fail+1)); echo "FAIL no approval records starts no git"; fi
+
 # Audit reproductions
 audit_base=$(git rev-parse HEAD)
 audit_reset() {

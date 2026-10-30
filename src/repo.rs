@@ -34,11 +34,11 @@ pub fn git_text(root: &Path, args: &[&str]) -> Result<String, String> {
     git(root, args).map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
 }
 
-fn lines(bytes: &[u8]) -> Vec<String> {
-    String::from_utf8_lossy(bytes)
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
+fn nul_paths(bytes: &[u8]) -> Vec<String> {
+    bytes
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8_lossy(path).into_owned())
         .collect()
 }
 
@@ -52,8 +52,8 @@ pub enum View {
 
 impl View {
     /// Paths that mention `LOCKED:`, found with `git grep` so large repositories stay fast.
-    pub fn marked(&self, root: &Path) -> Vec<String> {
-        let mut args = vec!["grep", "-l", "-I", "-F", "-e", "LOCKED:"];
+    pub fn marked(&self, root: &Path) -> Result<Vec<String>, String> {
+        let mut args = vec!["grep", "-l", "-I", "-z", "-F", "-e", "LOCKED:"];
         match self {
             View::Worktree => args.push("--untracked"),
             View::Index => args.push("--cached"),
@@ -62,10 +62,12 @@ impl View {
                 args.push("--");
             }
         }
-        let found = git(root, &args)
-            .map(|bytes| lines(&bytes))
-            .unwrap_or_default();
-        match self {
+        let found = match git(root, &args) {
+            Ok(bytes) => nul_paths(&bytes),
+            Err(error) if error.is_empty() => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        Ok(match self {
             View::Commit(rev) => found
                 .into_iter()
                 .map(|line| {
@@ -73,17 +75,22 @@ impl View {
                         .unwrap_or(&line)
                         .to_string()
                 })
-                .collect(),
+                .collect::<Vec<_>>(),
             _ => found,
-        }
+        })
     }
 
-    fn files(&self, root: &Path, dir: &str) -> Vec<String> {
+    pub fn marked_or_empty(&self, root: &Path) -> Vec<String> {
+        self.marked(root).unwrap_or_default()
+    }
+
+    fn files(&self, root: &Path, dir: &str) -> Result<Vec<String>, String> {
         let output = match self {
             View::Worktree => git(
                 root,
                 &[
                     "ls-files",
+                    "-z",
                     "--cached",
                     "--others",
                     "--exclude-standard",
@@ -91,10 +98,13 @@ impl View {
                     dir,
                 ],
             ),
-            View::Index => git(root, &["ls-files", "--cached", "--", dir]),
-            View::Commit(rev) => git(root, &["ls-tree", "-r", "--name-only", rev, "--", dir]),
+            View::Index => git(root, &["ls-files", "-z", "--cached", "--", dir]),
+            View::Commit(rev) => git(
+                root,
+                &["ls-tree", "-z", "-r", "--name-only", rev, "--", dir],
+            ),
         };
-        output.map(|bytes| lines(&bytes)).unwrap_or_default()
+        output.map(|bytes| nul_paths(&bytes))
     }
 
     pub fn read(&self, root: &Path, path: &str) -> Option<Vec<u8>> {
@@ -233,7 +243,7 @@ type Locks = BTreeMap<(String, String), Entry>;
 /// Every lock in a view, keyed by path and id.
 pub fn inventory(root: &Path, view: &View) -> Result<Locks, String> {
     let whole = parse_file_locks(view.read(root, FILE_LOCKS).as_deref())?;
-    let mut paths = view.marked(root);
+    let mut paths = view.marked(root)?;
     paths.extend(whole.iter().cloned());
     paths.sort();
     paths.dedup();
@@ -307,14 +317,14 @@ fn approvals_since(root: &Path, view: &View, base: Option<&str>) -> Result<Vec<A
         Some(base) => Some(
             git(
                 root,
-                &["ls-tree", "-r", "--name-only", base, "--", APPROVALS],
+                &["ls-tree", "-z", "-r", "--name-only", base, "--", APPROVALS],
             )
-            .map(|bytes| lines(&bytes).into_iter().collect::<HashSet<_>>())?,
+            .map(|bytes| nul_paths(&bytes).into_iter().collect::<HashSet<_>>())?,
         ),
         None => None,
     };
     let paths: Vec<String> = view
-        .files(root, APPROVALS)
+        .files(root, APPROVALS)?
         .into_iter()
         .filter(|path| path.ends_with(".json"))
         .filter(|path| {
@@ -338,9 +348,17 @@ pub fn disk_approvals(root: &Path) -> Result<Vec<Approval>, String> {
     let tracked = if git(root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok() {
         git(
             root,
-            &["ls-tree", "-r", "--name-only", "HEAD", "--", APPROVALS],
+            &[
+                "ls-tree",
+                "-z",
+                "-r",
+                "--name-only",
+                "HEAD",
+                "--",
+                APPROVALS,
+            ],
         )
-        .map(|bytes| lines(&bytes).into_iter().collect::<HashSet<_>>())?
+        .map(|bytes| nul_paths(&bytes).into_iter().collect::<HashSet<_>>())?
     } else {
         HashSet::new()
     };
@@ -361,6 +379,51 @@ pub fn disk_approvals(root: &Path) -> Result<Vec<Approval>, String> {
         found.push(parse_approval(&name, &bytes)?);
     }
     Ok(found)
+}
+
+/// Approvals relevant to one path. Record files are read before consulting git so
+/// edits to files with no matching records do not start any git processes.
+pub fn disk_approvals_for(root: &Path, path: &str) -> Result<Vec<Approval>, String> {
+    let Ok(dir) = fs::read_dir(root.join(APPROVALS)) else {
+        return Ok(Vec::new());
+    };
+    let mut found = Vec::new();
+    for item in dir.flatten() {
+        let name = item.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".json") {
+            continue;
+        }
+        let bytes = fs::read(item.path()).map_err(|error| format!("{name}: {error}"))?;
+        let record = parse_approval(&name, &bytes)?;
+        if eq(&record.path, path) {
+            found.push((format!("{APPROVALS}/{name}"), record));
+        }
+    }
+    if found.is_empty() {
+        return Ok(Vec::new());
+    }
+    let tracked = if git(root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok() {
+        git(
+            root,
+            &[
+                "ls-tree",
+                "-z",
+                "-r",
+                "--name-only",
+                "HEAD",
+                "--",
+                APPROVALS,
+            ],
+        )
+        .map(|bytes| nul_paths(&bytes).into_iter().collect::<HashSet<_>>())?
+    } else {
+        HashSet::new()
+    };
+    Ok(found
+        .into_iter()
+        .filter(|(name, _)| !tracked.contains(name))
+        .map(|(_, record)| record)
+        .collect())
 }
 
 /// Whether approvals lead from one state of a lock to another. Several approved
@@ -428,7 +491,8 @@ pub fn violations(root: &Path, target: &View, base: &str) -> Result<Vec<Violatio
     if let View::Commit(rev) = target {
         args.push(rev);
     }
-    let mut changed: Vec<String> = lines(&git(root, &args)?);
+    args.push("-z");
+    let mut changed: Vec<String> = nul_paths(&git(root, &args)?);
     let base_view = View::Commit(base.to_string());
     let base_whole = parse_file_locks(base_view.read(root, FILE_LOCKS).as_deref())?;
     if changed.iter().any(|path| path == FILE_LOCKS) {

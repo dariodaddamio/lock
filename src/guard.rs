@@ -170,12 +170,28 @@ fn hooks(value: &Value) -> usize {
 
 /// `core.hooksPath` in the repository's own config and in the user's config.
 pub fn hooks_paths(root: &Path) -> (Option<String>, Option<String>) {
-    let read = |scope: &str| {
-        git_text(root, &["config", scope, "--get", "core.hooksPath"])
-            .ok()
-            .filter(|value| !value.is_empty())
-    };
-    (read("--local"), read("--global"))
+    let mut local = None;
+    let mut global = None;
+    if let Ok(output) = git_text(
+        root,
+        &["config", "--show-scope", "--get-all", "core.hooksPath"],
+    ) {
+        for line in output.lines() {
+            let Some((scope, value)) = line.split_once(char::is_whitespace) else {
+                continue;
+            };
+            let value = value.trim();
+            if value.is_empty() {
+                continue;
+            }
+            match scope {
+                "local" => local = Some(value.to_string()),
+                "global" => global = Some(value.to_string()),
+                _ => {}
+            }
+        }
+    }
+    (local, global)
 }
 
 /// Puts `core.hooksPath` back the way it was. Returns whether anything changed.

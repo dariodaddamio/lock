@@ -105,7 +105,7 @@ fn is_pre_commit(path: &str) -> bool {
 
 /// Every file whose change lock must check after a command.
 fn watched(root: &Path, pre_commit: &str) -> Vec<String> {
-    let mut paths = View::Worktree.marked(root);
+    let mut paths = View::Worktree.marked_or_empty(root);
     paths.extend(
         parse_file_locks(fs::read(root.join(FILE_LOCKS)).ok().as_deref()).unwrap_or_default(),
     );

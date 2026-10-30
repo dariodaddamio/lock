@@ -9,7 +9,7 @@ use crate::ask::{self, Ask};
 use crate::paths::{eq, relative, under};
 use crate::regions::{hash, regions, supports_markers};
 use crate::repo::{
-    APPROVALS, FILE_LOCKS, WHOLE_FILE, approved, disk_approvals, find_root, parse_file_locks,
+    APPROVALS, FILE_LOCKS, WHOLE_FILE, approved, disk_approvals_for, find_root, parse_file_locks,
 };
 use crate::{guard, patch, pending, shell, watch};
 use serde_json::{Value, json};
@@ -303,7 +303,7 @@ fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
                 }
             }
             let key = match command.filter(|_| is_shell) {
-                Some(command) => command,
+                Some(command) => shell_key(&command, call),
                 None => other_key(&tool, call, input),
             };
             // The call already ran, so an error here cannot block it; it is reported.
@@ -338,7 +338,8 @@ fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
         if !refusals.is_empty() {
             return Ok(Outcome::Deny(reasons(&refusals)));
         }
-        watch::before(&root, session, &command, background)?;
+        let key = shell_key(&command, call);
+        watch::before(&root, session, &key, background)?;
         return Ok(Outcome::Allow);
     } else if SAFE_TOOLS.contains(&tool.as_str()) {
         return Ok(Outcome::Allow);
@@ -408,6 +409,10 @@ fn other_key(tool: &str, call: Option<&str>, input: &Value) -> String {
         Some(call) => format!("tool {tool} {call}"),
         None => format!("tool {tool} {input}"),
     }
+}
+
+fn shell_key(command: &str, call: Option<&str>) -> String {
+    call.map_or_else(|| command.to_string(), |id| format!("{command}\n{id}"))
 }
 
 fn judge_all(root: &Path, changes: &[Change]) -> Result<Vec<Refusal>, String> {
@@ -696,7 +701,7 @@ fn judge(root: &Path, change: &Change) -> Result<Option<Refusal>, String> {
         )));
     }
 
-    let records = disk_approvals(root)?;
+    let records = disk_approvals_for(root, path)?;
     let mut blocked: Vec<Ask> = Vec::new();
     if whole_file {
         let from = before.map(|text| hash(text.as_bytes()));
