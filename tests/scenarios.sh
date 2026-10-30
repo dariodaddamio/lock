@@ -257,7 +257,7 @@ weird='src/we"ird name.ts'
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) windows=1;; *) windows=;; esac
 if [ -z "$windows" ] && printf '/* LOCKED: strange START */\nexport const strange = "keep";\n/* LOCKED: strange END */\n' > "$weird" 2>/dev/null && [ -f "$weird" ]; then
   git add -- "$weird" && git commit -qm 'add unusual locked path' -- "$weird"
-  expect "unusual locked path edit is denied" deny "$(j '{"cwd":"ROOT","tool_name":"Edit","tool_input":{"file_path":"ROOT/src/we"ird name.ts","old_string":"keep","new_string":"changed"}}')"
+  expect "unusual locked path edit is denied" deny "$(j '{"cwd":"ROOT","tool_name":"Edit","tool_input":{"file_path":"ROOT/src/we\u0022ird name.ts","old_string":"keep","new_string":"changed"}}')"
   perl -pi -e 's/"keep"/"changed"/' "$weird"
   "$LOCK" check >/dev/null 2>&1 && { fail=$((fail+1)); echo "FAIL unusual locked path check"; } || { pass=$((pass+1)); echo "ok   unusual locked path check"; }
   git checkout -q -- "$weird"
