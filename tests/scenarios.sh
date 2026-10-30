@@ -44,7 +44,7 @@ expect() { # name, expected (allow|deny), payload
   out="$(printf '%s' "$3" | "$LOCK" hook claude 2>"$WORK/.stderr")"; code=$?
   if [ -n "$out" ]; then got=deny; else got=allow; fi
   [ $code -eq 2 ] && got="error"
-  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "ok   $1"; else fail=$((fail+1)); echo "FAIL $1 (got $got) $out"; cat "$WORK/.stderr"; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "ok   $1"; else fail=$((fail+1)); echo "FAIL $1 (got $got) $out"; cat "$WORK/.stderr"; echo "input: $3"; fi
 }
 j() { printf '%s' "$1" | sed "s#ROOT#${ROOT//\\/\\\\}#g"; }
 
