@@ -263,8 +263,11 @@ audit_reset() {
 }
 
 audit_reset
+# A1 matters only where the file system ignores case; elsewhere .LOCKS is another folder.
+touch .case-probe; if [ -e .CASE-PROBE ]; then
 expect "audit: A1 case-folded .locks path is refused" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.LOCKS/approvals/x.json","content":"{}"}}')"
 expect "audit: A1 case-folded Claude settings path is refused" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.CLAUDE/settings.json","content":"{}"}}')"
+else pass=$((pass+2)); echo "ok   audit: A1 case-folded paths (skipped on this OS)"; fi; rm -f .case-probe
 
 audit_reset
 agent "ln -s .locks/approvals linkdir" || true
