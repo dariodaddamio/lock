@@ -36,10 +36,30 @@ runs:
         mkdir -p "$dir"
         base="https://github.com/dariodaddamio/lock/releases/download/$VERSION"
         if [ "$RUNNER_OS" = Windows ]; then
-          curl -fsSL "$base/lock-$target.zip" -o "$dir/lock.zip"
-          unzip -q -o "$dir/lock.zip" -d "$dir"
+          archive="lock-$target.zip"
         else
-          curl -fsSL "$base/lock-$target.tar.gz" | tar -xz -C "$dir"
+          archive="lock-$target.tar.gz"
+        fi
+        curl -fsSL "$base/$archive" -o "$dir/$archive"
+        curl -fsSL "$base/SHA256SUMS" -o "$dir/SHA256SUMS"
+        expected="$(grep " $archive\$" "$dir/SHA256SUMS" | cut -d ' ' -f 1)"
+        if [ "$RUNNER_OS" = macOS ]; then
+          actual="$(shasum -a 256 "$dir/$archive" | cut -d ' ' -f 1)"
+        else
+          actual="$(sha256sum "$dir/$archive" | cut -d ' ' -f 1)"
+        fi
+        if [ -z "$expected" ]; then
+          echo "lock: no checksum for $archive was found in SHA256SUMS, so it was not installed." >&2
+          exit 1
+        fi
+        if [ "$expected" != "$actual" ]; then
+          echo "lock: the download does not match its checksum in SHA256SUMS, so it was not installed." >&2
+          exit 1
+        fi
+        if [ "$RUNNER_OS" = Windows ]; then
+          unzip -q -o "$dir/$archive" -d "$dir"
+        else
+          tar -xzf "$dir/$archive" -C "$dir"
         fi
         echo "$dir" >> "$GITHUB_PATH"
     - name: Check locks

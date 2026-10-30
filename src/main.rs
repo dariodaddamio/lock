@@ -14,6 +14,7 @@
 mod approve;
 mod ask;
 mod guard;
+mod head;
 mod hook;
 mod install;
 mod patch;

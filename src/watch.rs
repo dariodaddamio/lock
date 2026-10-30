@@ -10,6 +10,7 @@
 //! are removed when the call ends, or when the agent's turn ends.
 
 use crate::guard;
+use crate::head;
 use crate::hook::{HOOK_CONFIGS, weakens_hooks};
 use crate::install::ensure_git_hook;
 use crate::pending;
@@ -85,18 +86,13 @@ fn walk(root: &Path, dir: &str, found: &mut Vec<String>) {
     }
 }
 
-/// The pre-commit hook path and HEAD, from one git call.
+/// The pre-commit hook path and HEAD.
 fn hooks_and_head(root: &Path) -> (String, Option<String>) {
-    // Before the first commit HEAD does not resolve, and git fails the whole call.
-    let out = git_text(root, &["rev-parse", "--git-path", "hooks", "HEAD"])
-        .or_else(|_| git_text(root, &["rev-parse", "--git-path", "hooks"]))
-        .unwrap_or_default();
-    let mut lines = out.lines();
-    let hooks = lines.next().unwrap_or(".git/hooks").replace('\\', "/");
-    (
-        format!("{hooks}/pre-commit"),
-        lines.next().map(str::to_string),
-    )
+    let hooks = git_text(root, &["rev-parse", "--git-path", "hooks"])
+        .unwrap_or_else(|_| ".git/hooks".into())
+        .trim()
+        .replace('\\', "/");
+    (format!("{hooks}/pre-commit"), head::head(root))
 }
 
 fn is_pre_commit(path: &str) -> bool {
@@ -584,7 +580,7 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
     };
     let mut head_note = None;
     if let Some(old) = judge.old_head.clone()
-        && let Ok(new) = git_text(root, &["rev-parse", "--verify", "-q", "HEAD"])
+        && let Some(new) = head::head(root)
         && old != new
         && !judge.head_moved_cleanly()
     {
