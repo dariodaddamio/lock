@@ -183,7 +183,7 @@ fn shown(root: &Path, path: &Path) -> String {
         .map_or(text.clone(), str::to_string)
 }
 
-fn git_hook(root: &Path) -> Result<String, String> {
+pub(crate) fn ensure_git_hook(root: &Path) -> Result<String, String> {
     let dir = match git_text(root, &["config", "core.hooksPath"]) {
         Ok(custom) if !custom.is_empty() => root.join(custom),
         _ => root.join(git_text(root, &["rev-parse", "--git-path", "hooks"])?),
@@ -331,7 +331,7 @@ pub fn run(flags: &[String]) -> Result<i32, String> {
     type Step = fn(&Path) -> Result<String, String>;
     let mut steps: Vec<Step> = Vec::new();
     if wants("--git") {
-        steps.push(git_hook);
+        steps.push(ensure_git_hook);
     }
     if wants("--claude") {
         steps.push(claude);

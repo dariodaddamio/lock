@@ -11,6 +11,7 @@
 
 use crate::guard;
 use crate::hook::{HOOK_CONFIGS, weakens_hooks};
+use crate::install::ensure_git_hook;
 use crate::pending;
 use crate::regions::{hash, regions, supports_markers};
 use crate::repo::{
@@ -29,6 +30,30 @@ const MANIFEST: &str = "manifest.json";
 
 fn runs(root: &Path) -> PathBuf {
     git_dir(root).join("lock").join("runs")
+}
+
+fn marker_dir(root: &Path) -> PathBuf {
+    let canonical = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    std::env::temp_dir()
+        .join("lock-runs")
+        .join(&hash(canonical.to_string_lossy().as_bytes())[..12])
+}
+
+fn marker(root: &Path, snapshot: &str) -> PathBuf {
+    marker_dir(root).join(snapshot)
+}
+
+#[cfg(unix)]
+fn file_mode(path: &Path) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path)
+        .ok()
+        .map(|metadata| metadata.permissions().mode())
+}
+
+#[cfg(not(unix))]
+fn file_mode(_path: &Path) -> Option<u32> {
+    None
 }
 
 fn now() -> u64 {
@@ -138,9 +163,17 @@ pub fn before(root: &Path, session: &str, command: &str, background: bool) -> Re
         "external": external,
         "hooksPath": [local, global],
         "background": background,
+        "inProgress": in_progress(root),
+        "preCommitMode": file_mode(&root.join(&pre_commit)),
     });
     fs::write(dir.join(MANIFEST), format!("{manifest:#}\n"))
-        .map_err(|error| format!("could not copy locked files: {error}"))
+        .map_err(|error| format!("could not copy locked files: {error}"))?;
+    fs::create_dir_all(marker_dir(root)).map_err(|error| error.to_string())?;
+    fs::write(
+        marker(root, &key(session, command)),
+        dir.to_string_lossy().as_bytes(),
+    )
+    .map_err(|error| format!("could not write command marker: {error}"))
 }
 
 struct Snapshot {
@@ -167,13 +200,16 @@ impl Snapshot {
     }
 
     /// `None` when the file was not copied; `Some(None)` when it did not exist.
-    fn read(&self, path: &str) -> Option<Option<Vec<u8>>> {
-        let entry = self.manifest.get("files")?.get(path)?;
-        Some(
-            entry
-                .as_str()
-                .map(|name| fs::read(self.dir.join(name)).unwrap_or_default()),
-        )
+    fn read(&self, path: &str) -> Result<Option<Option<Vec<u8>>>, String> {
+        let Some(entry) = self.manifest.get("files").and_then(|files| files.get(path)) else {
+            return Ok(None);
+        };
+        let Some(name) = entry.as_str() else {
+            return Ok(Some(None));
+        };
+        fs::read(self.dir.join(name))
+            .map(|bytes| Some(Some(bytes)))
+            .map_err(|error| format!("could not read snapshot copy of {path}: {error}"))
     }
 
     fn fresh(&self) -> bool {
@@ -197,6 +233,9 @@ fn snapshots(root: &Path) -> Vec<Snapshot> {
 pub fn prune(root: &Path, session: Option<&str>) {
     for snapshot in snapshots(root) {
         if !snapshot.fresh() || session.is_some_and(|id| snapshot.field("session") == Some(id)) {
+            if let Some(name) = snapshot.dir.file_name() {
+                let _ = fs::remove_file(marker(root, &name.to_string_lossy()));
+            }
             let _ = fs::remove_dir_all(&snapshot.dir);
         }
     }
@@ -338,6 +377,14 @@ pub fn settle_background(root: &Path, session: &str) -> Result<Option<String>, S
             continue;
         }
         let result = settle(root, &snapshot);
+        let _ = fs::remove_file(marker(
+            root,
+            &snapshot
+                .dir
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+        ));
         let _ = fs::remove_dir_all(&snapshot.dir);
         messages.extend(result?);
     }
@@ -351,16 +398,95 @@ pub fn settle_background(root: &Path, session: &str) -> Result<Option<String>, S
 }
 
 pub fn after(root: &Path, session: &str, command: &str) -> Result<Option<String>, String> {
-    let Some(snapshot) = Snapshot::load(runs(root).join(key(session, command))) else {
-        return Ok(None);
+    let snapshot_key = key(session, command);
+    let path = marker(root, &snapshot_key);
+    let Some(snapshot) = Snapshot::load(runs(root).join(&snapshot_key)) else {
+        let result = if path.exists() {
+            recover_deleted(root)
+        } else {
+            Ok(None)
+        };
+        let _ = fs::remove_file(path);
+        return result;
     };
     let result = settle(root, &snapshot);
+    let result = match result {
+        Err(error) => recover_deleted(root).map(|message| {
+            Some(format!(
+                "{}\n\nlock could not read its snapshot: {error}",
+                message
+                    .unwrap_or_else(|| "lock restored the locked text to the last commit".into())
+            ))
+        }),
+        other => other,
+    };
+    let _ = fs::remove_file(path);
     let _ = fs::remove_dir_all(&snapshot.dir);
     result
 }
 
+fn recover_deleted(root: &Path) -> Result<Option<String>, String> {
+    let problems = violations(root, &View::Worktree, "HEAD")?;
+    let mut restored = Vec::new();
+    for problem in problems {
+        let head = View::Commit("HEAD".into()).read(root, &problem.before.path);
+        let full = root.join(&problem.before.path);
+        let bytes = match (
+            problem.before.id.as_str(),
+            head.as_deref(),
+            fs::read(&full).ok(),
+        ) {
+            (WHOLE_FILE, Some(head), _) => head.to_vec(),
+            (_, Some(head), Some(current)) => {
+                let old = regions(&problem.before.path, &String::from_utf8_lossy(head));
+                let new = regions(&problem.before.path, &String::from_utf8_lossy(&current));
+                match (old, new) {
+                    (Ok(old), Ok(new)) => {
+                        let Some(wanted) = old
+                            .into_iter()
+                            .find(|r| r.id == problem.before.id)
+                            .map(|region| region.text)
+                        else {
+                            put(root, &problem.before.path, Some(head))?;
+                            restored
+                                .push(format!("{} :: {}", problem.before.path, problem.before.id));
+                            continue;
+                        };
+                        match new.into_iter().find(|r| r.id == problem.before.id) {
+                            Some(found) => {
+                                let current_text = String::from_utf8_lossy(&current);
+                                let normalized = current_text.replace("\r\n", "\n");
+                                let restored = normalized.replacen(&found.text, &wanted, 1);
+                                if current_text.contains("\r\n") {
+                                    restored.replace('\n', "\r\n").into_bytes()
+                                } else {
+                                    restored.into_bytes()
+                                }
+                            }
+                            None => head.to_vec(),
+                        }
+                    }
+                    _ => head.to_vec(),
+                }
+            }
+            (.., Some(head), None) => head.to_vec(),
+            _ => continue,
+        };
+        put(root, &problem.before.path, Some(&bytes))?;
+        restored.push(format!("{} :: {}", problem.before.path, problem.before.id));
+    }
+    ensure_git_hook(root)?;
+    if restored.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "lock: its own copies were deleted during the command, so lock put the locked text back to the last commit: {}.",
+        restored.join(", ")
+    )))
+}
+
 fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
-    if in_progress(root) {
+    if snapshot.manifest.get("inProgress") == Some(&Value::Bool(true)) && in_progress(root) {
         // A merge or rebase stopped on a conflict; the commit hook judges the result.
         return Ok(None);
     }
@@ -382,7 +508,7 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
         }
     }
     for path in config {
-        let before = snapshot.read(&path).unwrap_or(None);
+        let before = snapshot.read(&path)?.unwrap_or(None);
         let now = fs::read(root.join(&path)).ok();
         if now == before {
             continue;
@@ -406,15 +532,30 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
         if !config && !is_pre_commit(path) {
             continue;
         }
-        let before = snapshot.read(path).unwrap_or(None);
+        let before = snapshot.read(path)?.unwrap_or(None);
         let now = fs::read(root.join(path)).ok();
         let weakened = if config {
             weakens_hooks(before.as_deref(), now.as_deref())
         } else {
             count(now.as_deref(), "# lock") < count(before.as_deref(), "# lock")
         };
-        if weakened {
+        let hook_changed = !config && before != now;
+        if weakened || hook_changed {
             put(root, path, before.as_deref())?;
+            #[cfg(unix)]
+            if hook_changed
+                && let Some(mode) = snapshot
+                    .manifest
+                    .get("preCommitMode")
+                    .and_then(Value::as_u64)
+                    .filter(|mode| mode & 0o111 != 0)
+                && let Ok(metadata) = fs::metadata(root.join(path))
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut permissions = metadata.permissions();
+                permissions.set_mode(mode as u32);
+                let _ = fs::set_permissions(root.join(path), permissions);
+            }
             undone.push(path.clone());
         }
     }
@@ -433,7 +574,9 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
         };
         let before = copy
             .as_str()
-            .map(|name| fs::read(snapshot.dir.join(name)).unwrap_or_default());
+            .map(|name| fs::read(snapshot.dir.join(name)))
+            .transpose()
+            .map_err(|error| format!("could not read snapshot copy of {path}: {error}"))?;
         let now = fs::read(&full).ok();
         let text = |bytes: &Option<Vec<u8>>| {
             bytes
@@ -468,12 +611,36 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
         old_head: snapshot.field("head").map(str::to_string),
         head_files: HashMap::new(),
     };
+    let mut head_note = None;
+    if let Some(old) = judge.old_head.clone()
+        && let Ok(new) = git_text(root, &["rev-parse", "--verify", "-q", "HEAD"])
+        && old != new
+        && !judge.head_moved_cleanly()
+    {
+        let ancestor = git(root, &["merge-base", "--is-ancestor", &old, &new]).is_ok();
+        if ancestor {
+            let commits = git_text(root, &["log", "--format=%h", &format!("{old}..{new}")])
+                .unwrap_or_default();
+            git(root, &["reset", "--soft", &old]).map_err(|error| {
+                format!("could not undo commits that skipped the lock hook: {error}")
+            })?;
+            judge.head_ok = None;
+            head_note = Some(format!(
+                "lock: HEAD moved through commits that skipped the hook, so lock undid them ({}) and kept their changes staged.\n",
+                commits.lines().collect::<Vec<_>>().join(", ")
+            ));
+        } else {
+            head_note = Some(format!(
+                "lock: HEAD moved with locked changes; `lock check --base {old}` fails, so lock could not undo the commits.\n"
+            ));
+        }
+    }
 
     // Whole-file locks, as the configuration listed them before the command.
     let whole: Vec<String> =
-        parse_file_locks(snapshot.read(FILE_LOCKS).flatten().as_deref()).unwrap_or_default();
+        parse_file_locks(snapshot.read(FILE_LOCKS)?.flatten().as_deref()).unwrap_or_default();
     for path in &whole {
-        let Some(before) = snapshot.read(path) else {
+        let Some(before) = snapshot.read(path)? else {
             continue;
         };
         let now = fs::read(root.join(path)).ok();
@@ -503,7 +670,7 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
         if path.starts_with(".locks/") || !supports_markers(path) || whole.contains(path) {
             continue;
         }
-        let Some(Some(before)) = snapshot.read(path) else {
+        let Some(Some(before)) = snapshot.read(path)? else {
             continue;
         };
         let now = fs::read(root.join(path)).ok();
@@ -573,7 +740,7 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
     }
 
     if undone.is_empty() && put_back.is_empty() {
-        return Ok(None);
+        return Ok(head_note);
     }
     let mut lines = Vec::new();
     if !put_back.is_empty() {
@@ -596,6 +763,9 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
             "lock: this command changed {}, which only a person may change, so lock put it back.",
             undone.join(", ")
         ));
+    }
+    if let Some(note) = head_note {
+        lines.insert(0, note);
     }
     Ok(Some(lines.join("\n\n")))
 }
