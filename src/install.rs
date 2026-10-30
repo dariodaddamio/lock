@@ -61,23 +61,32 @@ fn agent_hooks(
     let path = root.join(file);
     let mut settings = read_json(&path)?;
     let hooks = object(object(&mut settings)?.entry("hooks").or_insert(json!({})))?;
-    let mut added = false;
+    let mut changed = false;
     for (event, matcher) in entries {
-        let list = hooks.entry(*event).or_insert(json!([]));
-        if mentions_lock(list) {
-            continue;
-        }
+        let list = hooks
+            .entry(*event)
+            .or_insert(json!([]))
+            .as_array_mut()
+            .ok_or_else(|| format!("{event} must be a list"))?;
         let mut entry =
             json!({ "hooks": [{ "type": "command", "command": hook_command(host, event) }] });
         if let Some(matcher) = matcher {
             entry["matcher"] = json!(matcher);
         }
-        list.as_array_mut()
-            .ok_or_else(|| format!("{event} must be a list"))?
-            .push(entry);
-        added = true;
+        // An entry from an older lock is brought up to date in place.
+        match list.iter_mut().find(|existing| mentions_lock(existing)) {
+            Some(existing) if *existing == entry => {}
+            Some(existing) => {
+                *existing = entry;
+                changed = true;
+            }
+            None => {
+                list.push(entry);
+                changed = true;
+            }
+        }
     }
-    if !added {
+    if !changed {
         return Ok(format!("{file} already runs the lock hook."));
     }
     write_json(&path, &settings)?;
@@ -93,7 +102,8 @@ fn claude(root: &Path) -> Result<String, String> {
                 "PreToolUse",
                 Some("Edit|MultiEdit|Write|NotebookEdit|Bash|PowerShell"),
             ),
-            ("PostToolUse", Some("Bash|PowerShell")),
+            // After an edit, lock records an approval that the person gave in the prompt.
+            ("PostToolUse", Some("Edit|MultiEdit|Write|Bash|PowerShell")),
             ("Stop", None),
         ],
         "claude",
@@ -161,6 +171,14 @@ fn cursor(root: &Path) -> Result<String, String> {
     Ok("Added the lock hook to .cursor/hooks.json.".into())
 }
 
+/// A path as the person reads it: from the repository root, with forward slashes.
+fn shown(root: &Path, path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let base = root.to_string_lossy().replace('\\', "/");
+    text.strip_prefix(&format!("{}/", base.trim_end_matches('/')))
+        .map_or(text.clone(), str::to_string)
+}
+
 fn git_hook(root: &Path) -> Result<String, String> {
     let dir = match git_text(root, &["config", "core.hooksPath"]) {
         Ok(custom) if !custom.is_empty() => root.join(custom),
@@ -188,7 +206,110 @@ fn git_hook(root: &Path) -> Result<String, String> {
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(&hook, fs::Permissions::from_mode(0o755));
     }
-    Ok(format!("Added the lock check to {}.", hook.display()))
+    Ok(format!("Added the lock check to {}.", shown(root, &hook)))
+}
+
+/// Takes the lock entries out of one agent's hook settings. A file that held nothing
+/// else is removed.
+fn remove_agent_hooks(root: &Path, file: &str) -> Result<Option<String>, String> {
+    let path = root.join(file);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let mut settings = read_json(&path)?;
+    let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return Ok(None);
+    };
+    let before = hooks.clone();
+    for list in hooks.values_mut() {
+        if let Some(entries) = list.as_array_mut() {
+            entries.retain(|entry| !mentions_lock(entry));
+        }
+    }
+    hooks.retain(|_, list| list.as_array().is_none_or(|entries| !entries.is_empty()));
+    if *hooks == before {
+        return Ok(None);
+    }
+    let empty = hooks.is_empty();
+    let top = object(&mut settings)?;
+    if empty {
+        top.remove("hooks");
+    }
+    let only_version = top.keys().all(|key| key == "version");
+    if only_version {
+        fs::remove_file(&path).map_err(|error| error.to_string())?;
+        // The folder was made for this file; a folder with other files stays.
+        if let Some(dir) = path.parent() {
+            let _ = fs::remove_dir(dir);
+        }
+        return Ok(Some(format!(
+            "Removed {file}, which held only the lock hook."
+        )));
+    }
+    write_json(&path, &settings)?;
+    Ok(Some(format!("Removed the lock hook from {file}.")))
+}
+
+fn remove_git_hook(root: &Path) -> Result<Option<String>, String> {
+    let dir = match git_text(root, &["config", "core.hooksPath"]) {
+        Ok(custom) if !custom.is_empty() => root.join(custom),
+        _ => root.join(git_text(root, &["rev-parse", "--git-path", "hooks"])?),
+    };
+    let hook = dir.join("pre-commit");
+    let Ok(current) = fs::read_to_string(&hook) else {
+        return Ok(None);
+    };
+    let kept: Vec<&str> = current
+        .lines()
+        .filter(|line| !line.ends_with("# lock"))
+        .collect();
+    if kept.len() == current.lines().count() {
+        return Ok(None);
+    }
+    if kept
+        .iter()
+        .all(|line| line.trim().is_empty() || line.starts_with("#!"))
+    {
+        fs::remove_file(&hook).map_err(|error| error.to_string())?;
+        return Ok(Some(format!("Removed {}.", shown(root, &hook))));
+    }
+    fs::write(&hook, format!("{}\n", kept.join("\n"))).map_err(|error| error.to_string())?;
+    Ok(Some(format!(
+        "Removed the lock check from {}.",
+        shown(root, &hook)
+    )))
+}
+
+/// `lock uninstall`: takes every hook that `lock install` added out of this clone. Lock
+/// markers and `.locks/` stay, so `lock install` brings the protection back. Only a
+/// person at a terminal can run it, like `lock approve`.
+pub fn uninstall() -> Result<i32, String> {
+    crate::approve::require_person("lock uninstall")?;
+    let root = git_text(
+        &std::env::current_dir().map_err(|e| e.to_string())?,
+        &["rev-parse", "--show-toplevel"],
+    )
+    .map_err(|_| "run lock uninstall inside a git repository".to_string())?;
+    let root = Path::new(&root);
+    let mut done = Vec::new();
+    for file in [
+        ".claude/settings.json",
+        ".codex/hooks.json",
+        ".cursor/hooks.json",
+    ] {
+        done.extend(remove_agent_hooks(root, file)?);
+    }
+    done.extend(remove_git_hook(root)?);
+    if done.is_empty() {
+        println!("lock: this clone has no lock hooks.");
+    }
+    for line in done {
+        println!("lock: {line}");
+    }
+    println!(
+        "lock: the lock markers and .locks/ stay in the repository. Run `lock install` to protect them again."
+    );
+    Ok(0)
 }
 
 pub fn run(flags: &[String]) -> Result<i32, String> {

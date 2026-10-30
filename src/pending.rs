@@ -22,6 +22,11 @@ fn dir(root: &Path) -> PathBuf {
     git_dir(root).join("lock").join("pending")
 }
 
+fn key(path: &str, id: &str, after: Option<&str>) -> String {
+    let key = hash(format!("{path}\n{id}\n{}", after.unwrap_or("removed")).as_bytes());
+    format!("{}.json", &key[..16])
+}
+
 pub fn save(
     root: &Path,
     path: &str,
@@ -29,7 +34,7 @@ pub fn save(
     before: (Option<String>, &str),
     after: (Option<String>, &str),
 ) {
-    let key = hash(format!("{path}\n{id}\n{}", after.0.as_deref().unwrap_or("removed")).as_bytes());
+    let key = key(path, id, after.0.as_deref());
     let dir = dir(root);
     let record = json!({
         "path": path,
@@ -41,11 +46,13 @@ pub fn save(
     });
     // A failure to save only means the person sees no proposal to review; the block stands.
     if fs::create_dir_all(&dir).is_ok() {
-        let _ = fs::write(
-            dir.join(format!("{}.json", &key[..16])),
-            format!("{record:#}\n"),
-        );
+        let _ = fs::write(dir.join(key), format!("{record:#}\n"));
     }
+}
+
+/// Drops a proposal that a person approved some other way.
+pub fn forget(root: &Path, path: &str, id: &str, after: Option<&str>) {
+    let _ = fs::remove_file(dir(root).join(key(path, id, after)));
 }
 
 pub fn list(root: &Path) -> Vec<Pending> {

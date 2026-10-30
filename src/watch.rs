@@ -11,7 +11,7 @@
 //! a person's edit from an agent's: a change that is already in the copy was made
 //! before the command started, so a person made it by hand.
 
-use crate::hook::HOOK_CONFIGS;
+use crate::hook::{HOOK_CONFIGS, weakens_hooks};
 use crate::pending;
 use crate::regions::{hash, regions, supports_markers};
 use crate::repo::{
@@ -382,18 +382,18 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
 
     // The hook files must keep running lock.
     for path in &copied {
-        let needle = if is_pre_commit(path) {
-            "# lock"
-        } else if HOOK_CONFIGS.contains(&path.as_str()) {
-            "lock hook"
-        } else {
+        let config = HOOK_CONFIGS.contains(&path.as_str());
+        if !config && !is_pre_commit(path) {
             continue;
-        };
+        }
         let before = snapshot.read(path).unwrap_or(None);
         let now = fs::read(root.join(path)).ok();
-        let disables =
-            count(now.as_deref(), "disableAllHooks") > count(before.as_deref(), "disableAllHooks");
-        if count(now.as_deref(), needle) < count(before.as_deref(), needle) || disables {
+        let weakened = if config {
+            weakens_hooks(before.as_deref(), now.as_deref())
+        } else {
+            count(now.as_deref(), "# lock") < count(before.as_deref(), "# lock")
+        };
+        if weakened {
             put(root, path, before.as_deref())?;
             undone.push(path.clone());
         }

@@ -4,6 +4,8 @@ set -u
 LOCK="${LOCK:?set LOCK to the lock binary}"
 export PATH="$(cd "$(dirname "$LOCK")" && pwd):$PATH"
 WORK="$(mktemp -d)"
+# The person's own Claude Code settings must not change what the scenarios expect.
+export CLAUDE_CONFIG_DIR="$WORK/.claude-config"
 cd "$WORK" || exit 1
 sha() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi; }
 edit() { perl -pi -e "$1" "$2"; }
@@ -65,6 +67,7 @@ expect "unrelated file" allow "$(j '{"cwd":"ROOT","tool_name":"Write","tool_inpu
 expect "outside repo" allow "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"C:/elsewhere/a.ts","content":"x"}}')"
 expect "notebook on locked file" deny "$(j '{"cwd":"ROOT","tool_name":"NotebookEdit","tool_input":{"notebook_path":"ROOT/catalog.json","new_source":"x"}}')"
 expect "shell approve" deny "$(j '{"cwd":"ROOT","tool_name":"Bash","tool_input":{"command":"lock approve tagline"}}')"
+expect "shell uninstall" deny "$(j '{"cwd":"ROOT","tool_name":"Bash","tool_input":{"command":"lock uninstall"}}')"
 expect "shell command runs" allow "$(j '{"cwd":"ROOT","tool_name":"Bash","tool_input":{"command":"echo x > CHANGELOG.md"}}')"
 expect "remove lock hook from settings" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.claude/settings.json","content":"{\u0022disableAllHooks\u0022: true}"}}')"
 expect "patch on locked file" deny "$(j '{"cwd":"ROOT","tool_name":"ApplyPatch","tool_input":{"patch":"*** Begin Patch\n*** Update File: src/app.ts\n@@\n-a\n+b\n*** End Patch"}}')"
@@ -109,6 +112,7 @@ edit 's/Initial release\./Sneaky./' CHANGELOG.md; git add -A
 git commit -qm sneaky --no-verify
 "$LOCK" check --base HEAD~1 2>/dev/null && { fail=$((fail+1)); echo "FAIL ci base catches --no-verify"; } || { pass=$((pass+1)); echo "ok   ci base catches --no-verify"; }
 echo y | "$LOCK" approve 2>/dev/null && { fail=$((fail+1)); echo "FAIL approve refuses piped input"; } || { pass=$((pass+1)); echo "ok   approve refuses piped input"; }
+echo y | "$LOCK" uninstall 2>/dev/null && { fail=$((fail+1)); echo "FAIL uninstall refuses piped input"; } || { pass=$((pass+1)); echo "ok   uninstall refuses piped input"; }
 
 # Commands run, and lock checks what they changed afterwards.
 check() { if eval "$2"; then pass=$((pass+1)); echo "ok   $1"; else fail=$((fail+1)); echo "FAIL $1 $out"; fi; }
@@ -157,6 +161,39 @@ check "commit waits while an agent command may be running" '[ "$(git log -1 --fo
 printf '{"cwd":"%s","session_id":"s1","hook_event_name":"Stop"}' "$ROOT" | "$LOCK" hook claude >/dev/null
 git commit -qam "after the turn" 2>/dev/null
 check "turn end clears the copies" '[ "$(git log -1 --format=%s)" = "after the turn" ]'
+
+# Claude Code asks the person in its permission prompt, and lock records a yes after the edit.
+call() { printf '{"cwd":"%s","session_id":"s2","permission_mode":"%s","hook_event_name":"%s","tool_use_id":"%s","tool_name":"Edit","tool_input":{"file_path":"%s/src/app.ts","old_string":"%s","new_string":"%s"}}' "$ROOT" "$1" "$2" "$3" "$ROOT" "$4" "$5" | "$LOCK" hook "${6:-claude}"; }
+out="$(call default PreToolUse t1 'Ship.' 'Ship today.')"
+check "first locked edit is refused in the chat" 'case "$out" in *\"deny\"*"retry the same edit"*) true;; *) false;; esac'
+out="$(call default PreToolUse t1 'Ship.' 'Ship today.')"
+check "the same edit again asks in the prompt" 'case "$out" in *\"ask\"*tagline*) true;; *) false;; esac'
+out="$(call default PreToolUse t1 'Ship.' 'Ship differently.')"
+check "a different edit is refused first" 'case "$out" in *\"deny\"*) true;; *) false;; esac'
+call acceptEdits PreToolUse t1 'Ship.' 'Ship today.' >/dev/null
+out="$(call acceptEdits PreToolUse t1 'Ship.' 'Ship today.')"
+check "accept-edits mode still asks" 'case "$out" in *\"ask\"*) true;; *) false;; esac'
+out="$(call bypassPermissions PreToolUse t0 'Ship.' 'Ship today.')"
+check "bypass mode refuses instead" 'case "$out" in *\"deny\"*) true;; *) false;; esac'
+out="$(call default PreToolUse t0 'Ship.' 'Ship today.' codex)"
+check "codex refuses instead" 'case "$out" in *\"deny\"*) true;; *) false;; esac'
+mkdir -p "$CLAUDE_CONFIG_DIR"
+echo '{"hooks":{"PermissionRequest":[{"matcher":"*","hooks":[]}]}}' > "$CLAUDE_CONFIG_DIR/settings.json"
+out="$(call default PreToolUse t0 'Ship.' 'Ship today.')"
+check "a hook that answers prompts makes lock refuse" 'case "$out" in *\"deny\"*) true;; *) false;; esac'
+echo '{"hooks":{"PermissionRequest":[{"matcher":"AskUserQuestion","hooks":[]}]}}' > "$CLAUDE_CONFIG_DIR/settings.json"
+call default PreToolUse t0 'Ship.' 'Ship today.' >/dev/null
+out="$(call default PreToolUse t0 'Ship.' 'Ship today.')"
+check "a hook for other tools does not" 'case "$out" in *\"ask\"*) true;; *) false;; esac'
+rm "$CLAUDE_CONFIG_DIR/settings.json"
+out="$(call default PostToolUse t1 'Ship.' 'Ship today.')"
+check "a prompt answered no records nothing" '[ -z "$out" ] && [ -z "$(git status --porcelain .locks)" ]'
+call default PreToolUse t3 'Ship.' 'Ship today.' >/dev/null
+out="$(call default PreToolUse t3 'Ship.' 'Ship today.')"
+edit 's/"Ship\."/"Ship today."/' src/app.ts
+out="$(call default PostToolUse t3 'Ship.' 'Ship today.')"
+check "a yes is recorded after the edit" 'case "$out" in *approved*) true;; *) false;; esac && "$LOCK" check >/dev/null'
+expect "agent cannot add a hook that answers prompts" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.claude/settings.json","content":"{\u0022a\u0022: \u0022lock hook lock hook lock hook lock hook\u0022, \u0022PermissionRequest\u0022: []}"}}')"
 
 echo "passed $pass, failed $fail"
 [ "$fail" -eq 0 ]

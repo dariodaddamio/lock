@@ -97,11 +97,84 @@ impl View {
     }
 
     pub fn read(&self, root: &Path, path: &str) -> Option<Vec<u8>> {
-        match self {
-            View::Worktree => fs::read(root.join(path)).ok(),
-            View::Index => git(root, &["show", &format!(":{path}")]).ok(),
-            View::Commit(rev) => git(root, &["show", &format!("{rev}:{path}")]).ok(),
+        self.read_all(root, &[path.to_string()]).pop().flatten()
+    }
+
+    /// Reads many files in one go. Outside the working tree, one `git cat-file`
+    /// process serves every file, because starting git once per file is slow on large
+    /// repositories, and slowest on Windows.
+    pub fn read_all(&self, root: &Path, paths: &[String]) -> Vec<Option<Vec<u8>>> {
+        let prefix = match self {
+            View::Worktree => {
+                return paths
+                    .iter()
+                    .map(|path| fs::read(root.join(path)).ok())
+                    .collect();
+            }
+            View::Index => String::new(),
+            View::Commit(rev) => rev.clone(),
+        };
+        if paths.is_empty() {
+            return Vec::new();
         }
+        let mut input = String::new();
+        for path in paths {
+            input.push_str(&format!("{prefix}:{path}\n"));
+        }
+        let output = Command::new("git")
+            .args(["cat-file", "--batch"])
+            .current_dir(root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .and_then(|mut child| {
+                if let Some(mut stdin) = child.stdin.take() {
+                    use std::io::Write;
+                    // A failed write shows up as missing objects below.
+                    let _ = stdin.write_all(input.as_bytes());
+                }
+                child.wait_with_output()
+            });
+        let Ok(output) = output else {
+            return vec![None; paths.len()];
+        };
+        // Each answer is `<oid> <type> <size>\n<content>\n`, or `<name> missing\n`.
+        let bytes = output.stdout;
+        let mut at = 0;
+        let mut found = Vec::with_capacity(paths.len());
+        for _ in paths {
+            let Some(end) = bytes[at..].iter().position(|b| *b == b'\n') else {
+                found.push(None);
+                continue;
+            };
+            let header = String::from_utf8_lossy(&bytes[at..at + end]).into_owned();
+            at += end + 1;
+            let size = header
+                .rsplit(' ')
+                .next()
+                .and_then(|size| size.parse::<usize>().ok())
+                .filter(|_| header.split(' ').nth(1) == Some("blob"));
+            match size {
+                Some(size) if at + size <= bytes.len() => {
+                    found.push(Some(bytes[at..at + size].to_vec()));
+                    at += size + 1;
+                }
+                _ => {
+                    // A tree or commit has content too, which is skipped.
+                    if let Some(size) = header
+                        .rsplit(' ')
+                        .next()
+                        .and_then(|s| s.parse::<usize>().ok())
+                        && !header.ends_with(" missing")
+                    {
+                        at = (at + size + 1).min(bytes.len());
+                    }
+                    found.push(None);
+                }
+            }
+        }
+        found
     }
 }
 
@@ -136,15 +209,42 @@ pub fn parse_file_locks(bytes: Option<&[u8]>) -> Result<Vec<String>, String> {
         .collect()
 }
 
+type Locks = BTreeMap<(String, String), Entry>;
+
 /// Every lock in a view, keyed by path and id.
-pub fn inventory(root: &Path, view: &View) -> Result<BTreeMap<(String, String), Entry>, String> {
+pub fn inventory(root: &Path, view: &View) -> Result<Locks, String> {
+    let whole = parse_file_locks(view.read(root, FILE_LOCKS).as_deref())?;
+    let mut paths = view.marked(root);
+    paths.extend(whole.iter().cloned());
+    paths.sort();
+    paths.dedup();
+    locks_in(root, view, &paths, &whole)
+}
+
+/// The locks in some files of a view. `whole` lists the whole-file locks of the view.
+fn locks_in(root: &Path, view: &View, paths: &[String], whole: &[String]) -> Result<Locks, String> {
     let mut map = BTreeMap::new();
-    for path in view.marked(root) {
-        let Some(bytes) = view.read(root, &path) else {
+    for (path, bytes) in paths.iter().zip(view.read_all(root, paths)) {
+        if whole.contains(path) {
+            map.insert(
+                (path.clone(), WHOLE_FILE.to_string()),
+                Entry {
+                    path: path.clone(),
+                    id: WHOLE_FILE.to_string(),
+                    text: bytes
+                        .as_deref()
+                        .map(|b| String::from_utf8_lossy(b).into_owned())
+                        .unwrap_or_default(),
+                    hash: bytes.as_deref().map(hash),
+                },
+            );
+        }
+        // Binary files hold no markers, as with `git grep -I`.
+        let Some(bytes) = bytes.filter(|bytes| !bytes.contains(&0)) else {
             continue;
         };
         let text = String::from_utf8_lossy(&bytes);
-        for region in regions::regions(&path, &text)? {
+        for region in regions::regions(path, &text)? {
             map.insert(
                 (path.clone(), region.id.clone()),
                 Entry {
@@ -155,21 +255,6 @@ pub fn inventory(root: &Path, view: &View) -> Result<BTreeMap<(String, String), 
                 },
             );
         }
-    }
-    for path in parse_file_locks(view.read(root, FILE_LOCKS).as_deref())? {
-        let bytes = view.read(root, &path);
-        map.insert(
-            (path.clone(), WHOLE_FILE.to_string()),
-            Entry {
-                path: path.clone(),
-                id: WHOLE_FILE.to_string(),
-                text: bytes
-                    .as_deref()
-                    .map(|b| String::from_utf8_lossy(b).into_owned())
-                    .unwrap_or_default(),
-                hash: bytes.as_deref().map(hash),
-            },
-        );
     }
     Ok(map)
 }
@@ -197,11 +282,16 @@ pub fn parse_approval(name: &str, bytes: &[u8]) -> Result<Approval, String> {
 }
 
 pub fn approvals(root: &Path, view: &View) -> Result<Vec<Approval>, String> {
-    view.files(root, APPROVALS)
+    let paths: Vec<String> = view
+        .files(root, APPROVALS)
         .into_iter()
         .filter(|path| path.ends_with(".json"))
-        .filter_map(|path| view.read(root, &path).map(|bytes| (path, bytes)))
-        .map(|(path, bytes)| parse_approval(&path, &bytes))
+        .collect();
+    paths
+        .iter()
+        .zip(view.read_all(root, &paths))
+        .filter_map(|(path, bytes)| bytes.map(|bytes| (path, bytes)))
+        .map(|(path, bytes)| parse_approval(path, &bytes))
         .collect()
 }
 
@@ -277,8 +367,28 @@ pub fn violations(root: &Path, target: &View, base: &str) -> Result<Vec<Violatio
     {
         return Ok(Vec::new());
     }
-    let baseline = inventory(root, &View::Commit(base.to_string()))?;
-    let current = inventory(root, target)?;
+    // Only a file that differs from the base can hold a changed lock, so the check
+    // reads those files and stays fast in a large repository.
+    let mut args = vec!["diff", "--name-only", "--no-renames"];
+    if let View::Index = target {
+        args.push("--cached");
+    }
+    args.push(base);
+    if let View::Commit(rev) = target {
+        args.push(rev);
+    }
+    let mut changed: Vec<String> = lines(&git(root, &args)?);
+    let base_view = View::Commit(base.to_string());
+    let base_whole = parse_file_locks(base_view.read(root, FILE_LOCKS).as_deref())?;
+    if changed.iter().any(|path| path == FILE_LOCKS) {
+        // A whole-file lock can disappear from the list while its file stays the same.
+        changed.extend(base_whole.iter().cloned());
+    }
+    changed.sort();
+    changed.dedup();
+    let baseline = locks_in(root, &base_view, &changed, &base_whole)?;
+    let target_whole = parse_file_locks(target.read(root, FILE_LOCKS).as_deref())?;
+    let current = locks_in(root, target, &changed, &target_whole)?;
     let records = approvals(root, target)?;
     let mut problems = Vec::new();
     for (key, before) in baseline {

@@ -1,6 +1,6 @@
-//! The one shell command the hook refuses before it runs: an agent asking `lock approve`
-//! to approve its own change. Every other command runs, and `watch` checks what it
-//! changed afterwards.
+//! The shell commands the hook refuses before they run: an agent asking `lock approve`
+//! to approve its own change, or `lock uninstall` to take the hooks out. Every other
+//! command runs, and `watch` checks what it changed afterwards.
 
 pub fn denial(command: &str) -> Option<String> {
     let words: Vec<String> = command
@@ -12,8 +12,13 @@ pub fn denial(command: &str) -> Option<String> {
         let name = word.rsplit('/').next().unwrap_or(word);
         name == "lock" || name == "lock.exe"
     });
-    (mentions_lock && words.iter().any(|word| word == "approve")).then(|| {
-        "lock: only a person approves a locked change, by running `lock approve` in their own terminal. Ask the user to run it."
-            .to_string()
+    if !mentions_lock {
+        return None;
+    }
+    if words.iter().any(|word| word == "approve") {
+        return Some("lock: only a person approves a locked change, by running `lock approve` in their own terminal. Ask the user to run it.".into());
+    }
+    words.iter().any(|word| word == "uninstall").then(|| {
+        "lock: only a person removes the lock hooks. Ask the user to run `lock uninstall` in their own terminal.".into()
     })
 }

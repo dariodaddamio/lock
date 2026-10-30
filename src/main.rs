@@ -9,8 +9,10 @@
 //!   lock list                                 print every lock in the working tree
 //!   lock install [--git] [--claude] [--codex] [--cursor]
 //!                                             register the hooks in this clone
+//!   lock uninstall                            remove them (terminal only)
 
 mod approve;
+mod ask;
 mod hook;
 mod install;
 mod patch;
@@ -24,12 +26,24 @@ mod watch;
 use repo::{View, WHOLE_FILE, git, git_text, inventory, violations};
 use std::path::PathBuf;
 
-const USAGE: &str = "Usage:
-  lock hook claude|codex|cursor
-  lock check [--staged [--record] | --base <ref>]
-  lock approve [<id>|<path>...] [--reason <text>]
-  lock list
-  lock install [--git] [--claude] [--codex] [--cursor]";
+const USAGE: &str = "lock prevents coding agents from being able to change parts of your repo that must not be changed.
+
+Usage: lock <command>
+
+Commands:
+  install [--git] [--claude] [--codex] [--cursor]
+                Add the agent hooks and the commit check to this clone
+  approve [<id> or <path>...] [--reason <text>]
+                Review the changes that lock blocked, and approve the ones you want
+  list          Show each lock in the working tree
+  check [--staged [--record] | --base <ref>]
+                Compare the locks with HEAD, the staged changes, or a base branch
+  uninstall     Remove the hooks that lock install added
+  hook claude|codex|cursor
+                The agent hook, which the agent runs with one tool call on stdin
+
+Start with `lock install` in the root of a repository.
+Documentation: https://github.com/dariodaddamio/lock";
 
 fn root() -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
@@ -103,8 +117,7 @@ fn check(args: &[String]) -> Result<i32, String> {
     if !problems.is_empty() {
         return Ok(1);
     }
-    let count = inventory(&root, &view)?.len();
-    println!("lock: {count} locks match {label} or carry an approval.");
+    println!("lock: no locked text changed since {label} without an approval.");
     Ok(0)
 }
 
@@ -112,7 +125,8 @@ fn run(args: &[String]) -> Result<i32, String> {
     let rest = args.get(1..).unwrap_or_default();
     match args.first().map(String::as_str) {
         Some("hook") => match rest.first().map(String::as_str) {
-            Some("claude" | "codex") => Ok(hook::run(hook::Host::Claude)),
+            Some("claude") => Ok(hook::run(hook::Host::Claude)),
+            Some("codex") => Ok(hook::run(hook::Host::Codex)),
             Some("cursor") => Ok(hook::run(hook::Host::Cursor)),
             _ => Err("lock hook needs a host: claude, codex, or cursor".into()),
         },
@@ -137,6 +151,7 @@ fn run(args: &[String]) -> Result<i32, String> {
             Ok(0)
         }
         Some("install") => install::run(rest),
+        Some("uninstall") => install::uninstall(),
         Some("--version" | "-V") => {
             println!("lock {}", env!("CARGO_PKG_VERSION"));
             Ok(0)

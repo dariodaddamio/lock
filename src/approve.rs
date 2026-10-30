@@ -159,15 +159,22 @@ pub fn record(
     Ok(file)
 }
 
-pub fn run(root: &Path, filters: &[String], reason: Option<&str>) -> Result<i32, String> {
+/// Refuses to go on unless a person types into this terminal. Agents and CI run
+/// commands without a keyboard.
+pub fn require_person(command: &str) -> Result<(), String> {
     if !std::io::stdin().is_terminal()
         || !std::io::stdout().is_terminal()
         || std::env::var_os("CI").is_some()
     {
-        return Err(
-            "lock approve needs a person at an interactive terminal; it never runs in CI or from piped input".into(),
-        );
+        return Err(format!(
+            "{command} needs a person at an interactive terminal; it never runs in CI or from piped input"
+        ));
     }
+    Ok(())
+}
+
+pub fn run(root: &Path, filters: &[String], reason: Option<&str>) -> Result<i32, String> {
+    require_person("lock approve")?;
     let records = approvals(root, &View::Worktree)?;
     let mut list: Vec<Candidate> = candidates(root)?
         .into_iter()

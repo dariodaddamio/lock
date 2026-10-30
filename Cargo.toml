@@ -2,10 +2,14 @@
 name = "lock"
 version = "0.1.0"
 edition = "2024"
+# Let chains need 1.88.
+rust-version = "1.88"
 description = "Lock regions of a repository so coding agents cannot change them without a person's approval."
 license = "MIT"
 repository = "https://github.com/dariodaddamio/lock"
 readme = "README.md"
+homepage = "https://github.com/dariodaddamio/lock"
+exclude = ["docs/", ".github/", "tests/"]
 keywords = ["agents", "claude-code", "cursor", "git-hooks", "code-review"]
 categories = ["command-line-utilities", "development-tools"]
 

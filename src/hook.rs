@@ -2,8 +2,10 @@
 //! shell command, after every shell command, and when the agent's turn ends. Before an
 //! edit, it replays the proposed tool call against the file in memory and denies the
 //! call when a locked region would change without a person's approval, so the file on
-//! disk is never touched. Shell commands are checked by `watch`.
+//! disk is never touched. In Claude Code, the same edit tried again asks the person in
+//! the permission prompt, see `ask`. Shell commands are checked by `watch`.
 
+use crate::ask::{self, Ask};
 use crate::paths::{eq, relative};
 use crate::regions::{hash, regions, supports_markers};
 use crate::repo::{
@@ -15,10 +17,12 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy)]
+/// Claude Code and Codex share the `PreToolUse` output contract. Only Claude Code
+/// shows a hook's question to the person.
+#[derive(Clone, Copy, PartialEq)]
 pub enum Host {
-    /// Claude Code and Codex share the `PreToolUse` output contract.
     Claude,
+    Codex,
     Cursor,
 }
 
@@ -47,8 +51,12 @@ pub enum Outcome {
     /// After a command, or at the end of a turn, with nothing to report.
     Quiet,
     Deny(String),
+    /// Before an edit in Claude Code: the person decides in the permission prompt.
+    Ask(String),
     /// After a command ran: lock put locked text back and tells the agent.
     Report(String),
+    /// After an edit ran: lock tells the agent what it recorded.
+    Note(String),
 }
 
 pub fn run(host: Host) -> i32 {
@@ -60,7 +68,7 @@ pub fn run(host: Host) -> i32 {
             serde_json::from_str::<Value>(&input)
                 .map_err(|_| "the hook input is not JSON".to_string())
         })
-        .and_then(|payload| decide(&payload));
+        .and_then(|payload| decide(host, &payload));
     match decision {
         Ok(Outcome::Allow) => {
             if let Host::Cursor = host {
@@ -78,8 +86,25 @@ pub fn run(host: Host) -> i32 {
             println!("{}", deny(host, &reason));
             0
         }
+        Ok(Outcome::Ask(question)) => {
+            println!(
+                "{}",
+                json!({
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "ask",
+                        "permissionDecisionReason": question,
+                    }
+                })
+            );
+            0
+        }
         Ok(Outcome::Report(message)) => {
             println!("{}", report(host, &message));
+            0
+        }
+        Ok(Outcome::Note(message)) => {
+            println!("{}", note(host, &message));
             0
         }
         Err(error) => {
@@ -94,7 +119,7 @@ pub fn run(host: Host) -> i32 {
 
 fn report(host: Host, message: &str) -> Value {
     match host {
-        Host::Claude => json!({
+        Host::Claude | Host::Codex => json!({
             "decision": "block",
             "reason": message,
             "hookSpecificOutput": {
@@ -106,9 +131,21 @@ fn report(host: Host, message: &str) -> Value {
     }
 }
 
+fn note(host: Host, message: &str) -> Value {
+    match host {
+        Host::Claude | Host::Codex => json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": message,
+            }
+        }),
+        Host::Cursor => json!({ "additional_context": message }),
+    }
+}
+
 fn deny(host: Host, reason: &str) -> Value {
     match host {
-        Host::Claude => json!({
+        Host::Claude | Host::Codex => json!({
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
@@ -142,7 +179,7 @@ fn command_text(value: &Value) -> Option<String> {
     }
 }
 
-fn decide(payload: &Value) -> Result<Outcome, String> {
+fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
     let cwd = text(payload, &["cwd"])
         .map(PathBuf::from)
         .or_else(|| {
@@ -162,6 +199,7 @@ fn decide(payload: &Value) -> Result<Outcome, String> {
         .unwrap_or("PreToolUse")
         .to_ascii_lowercase();
     let session = text(payload, &["session_id", "conversation_id"]).unwrap_or_default();
+    let call = text(payload, &["tool_use_id"]);
     let tool = text(payload, &["tool_name", "toolName"])
         .unwrap_or_default()
         .rsplit('.')
@@ -178,11 +216,22 @@ fn decide(payload: &Value) -> Result<Outcome, String> {
     match event.as_str() {
         "stop" | "sessionend" => {
             watch::prune(&root, Some(session));
+            ask::prune(&root, session);
             return Ok(Outcome::Quiet);
         }
         "posttooluse" | "aftershellexecution" => {
             let Some(command) = command.filter(|_| is_shell) else {
-                return Ok(Outcome::Quiet);
+                // An edit ran. If lock asked about it, the person said yes.
+                return Ok(match call.filter(|_| host == Host::Claude) {
+                    Some(call) => match ask::confirm(&root, call) {
+                        Ok(Some(message)) => Outcome::Note(message),
+                        Ok(None) => Outcome::Quiet,
+                        Err(error) => Outcome::Report(format!(
+                            "lock could not record the approval for this edit: {error}. Ask the user to run `lock approve`."
+                        )),
+                    },
+                    None => Outcome::Quiet,
+                });
             };
             // The command already ran, so an error here cannot block it; it is reported.
             return Ok(match watch::after(&root, session, &command) {
@@ -212,31 +261,71 @@ fn decide(payload: &Value) -> Result<Outcome, String> {
             }
             None => Vec::new(),
         };
-        let reasons = judge_all(&root, &changes)?;
-        if !reasons.is_empty() {
-            return Ok(Outcome::Deny(reasons));
+        let refusals = judge_all(&root, &changes)?;
+        if !refusals.is_empty() {
+            return Ok(Outcome::Deny(reasons(&refusals)));
         }
         watch::before(&root, session, &command)?;
         return Ok(Outcome::Allow);
     } else {
         proposals(&root, &cwd, &tool, input, payload)?
     };
-    let reasons = judge_all(&root, &changes)?;
-    Ok(if reasons.is_empty() {
-        Outcome::Allow
-    } else {
-        Outcome::Deny(reasons)
-    })
+    let refusals = judge_all(&root, &changes)?;
+    if refusals.is_empty() {
+        return Ok(Outcome::Allow);
+    }
+    // A person may approve a locked change in Claude Code's own prompt. The first
+    // attempt is refused, so the chat shows that the text is locked, and the same edit
+    // tried again opens the prompt. A refusal for any other reason, such as a broken
+    // marker, stays a refusal.
+    if host == Host::Claude
+        && let Some(call) = call
+        && refusals.iter().all(|refusal| !refusal.asks.is_empty())
+        && ask::possible(&root, payload)
+    {
+        let asks: Vec<Ask> = refusals
+            .into_iter()
+            .flat_map(|refusal| refusal.asks)
+            .collect();
+        if !ask::retried(&root, session, &asks)? {
+            return Ok(Outcome::Deny(ask::first_refusal(&asks)));
+        }
+        ask::save(&root, session, call, &asks)?;
+        return Ok(Outcome::Ask(ask::question(&asks)));
+    }
+    Ok(Outcome::Deny(reasons(&refusals)))
 }
 
-fn judge_all(root: &Path, changes: &[Change]) -> Result<String, String> {
-    let mut reasons = Vec::new();
-    for change in changes {
-        if let Some(reason) = judge(root, change)? {
-            reasons.push(reason);
-        }
+/// Why lock refuses a change in one file, and the locked changes in it that a person
+/// may approve. A refusal that a person cannot approve has no asks.
+struct Refusal {
+    reason: String,
+    asks: Vec<Ask>,
+}
+
+impl Refusal {
+    fn hard(reason: String) -> Option<Self> {
+        Some(Self {
+            reason,
+            asks: Vec::new(),
+        })
     }
-    Ok(reasons.join("\n\n"))
+}
+
+fn reasons(refusals: &[Refusal]) -> String {
+    refusals
+        .iter()
+        .map(|refusal| refusal.reason.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn judge_all(root: &Path, changes: &[Change]) -> Result<Vec<Refusal>, String> {
+    let mut refusals = Vec::new();
+    for change in changes {
+        refusals.extend(judge(root, change)?);
+    }
+    Ok(refusals)
 }
 
 /// What a tool call would leave in one file.
@@ -435,7 +524,7 @@ fn approve_hint(id: &str, path: &str) -> String {
     )
 }
 
-fn judge(root: &Path, change: &Change) -> Result<Option<String>, String> {
+fn judge(root: &Path, change: &Change) -> Result<Option<Refusal>, String> {
     let path = change.path.as_str();
     let before = change.before.as_deref();
     let after = match &change.after {
@@ -453,7 +542,7 @@ fn judge(root: &Path, change: &Change) -> Result<Option<String>, String> {
             if dropped.is_empty() {
                 return Ok(None);
             }
-            return Ok(Some(format!(
+            return Ok(Refusal::hard(format!(
                 "lock: this edit removes {} from {FILE_LOCKS}. Agents may add whole-file locks but not remove them. Ask the user to make this change.",
                 dropped
                     .iter()
@@ -463,23 +552,19 @@ fn judge(root: &Path, change: &Change) -> Result<Option<String>, String> {
             )));
         }
         if path.starts_with(APPROVALS) {
-            return Ok(Some(format!(
-                "lock: {path} is an approval record. Only `lock approve`, run by a person at a terminal, writes approvals."
+            return Ok(Refusal::hard(format!(
+                "lock: {path} is an approval record. Only a person writes approvals, with `lock approve` or in the permission prompt."
             )));
         }
-        return Ok(Some(format!(
+        return Ok(Refusal::hard(format!(
             "lock: {path} is lock configuration. Ask the user to change it."
         )));
     }
 
     if HOOK_CONFIGS.iter().any(|config| eq(path, config)) {
-        let count =
-            |text: Option<&str>, needle: &str| text.map_or(0, |t| t.matches(needle).count());
-        let drops_hook = count(after, "lock hook") < count(before, "lock hook");
-        let disables = count(after, "disableAllHooks") > count(before, "disableAllHooks");
-        if drops_hook || disables {
-            return Ok(Some(format!(
-                "lock: this edit to {path} would remove the lock hook or turn hooks off. Agents cannot do that. Ask the user."
+        if weakens_hooks(before.map(str::as_bytes), after.map(str::as_bytes)) {
+            return Ok(Refusal::hard(format!(
+                "lock: this edit to {path} would remove the lock hook, turn hooks off, or add a hook that answers permission prompts. Agents cannot do that. Ask the user."
             )));
         }
         return Ok(None);
@@ -493,14 +578,14 @@ fn judge(root: &Path, change: &Change) -> Result<Option<String>, String> {
         return Ok(None);
     }
     if let After::Unknown(why) = &change.after {
-        return Ok(Some(format!(
+        return Ok(Refusal::hard(format!(
             "lock: {path} holds a lock, and this tool call cannot be checked against it ({why}). Use an exact Edit or Write instead. {}",
             approve_hint(if whole_file { WHOLE_FILE } else { "<id>" }, path)
         )));
     }
 
     let records = disk_approvals(root)?;
-    let mut blocked = Vec::new();
+    let mut blocked: Vec<Ask> = Vec::new();
     if whole_file {
         let from = before.map(|text| hash(text.as_bytes()));
         let to = after.map(|text| hash(text.as_bytes()));
@@ -509,10 +594,15 @@ fn judge(root: &Path, change: &Change) -> Result<Option<String>, String> {
                 root,
                 path,
                 WHOLE_FILE,
-                (from, before.unwrap_or_default()),
-                (to, after.unwrap_or_default()),
+                (from.clone(), before.unwrap_or_default()),
+                (to.clone(), after.unwrap_or_default()),
             );
-            blocked.push(WHOLE_FILE.to_string());
+            blocked.push(Ask {
+                path: path.to_string(),
+                id: WHOLE_FILE.to_string(),
+                before: from,
+                after: to,
+            });
         }
     }
     if marked {
@@ -523,7 +613,7 @@ fn judge(root: &Path, change: &Change) -> Result<Option<String>, String> {
             Some(text) => match regions(path, text) {
                 Ok(found) => found,
                 Err(error) => {
-                    return Ok(Some(format!(
+                    return Ok(Refusal::hard(format!(
                         "lock: this edit would break a lock marker ({error}). Nothing was written."
                     )));
                 }
@@ -550,31 +640,49 @@ fn judge(root: &Path, change: &Change) -> Result<Option<String>, String> {
                 &region.id,
                 (Some(region.hash.clone()), &region.text),
                 (
-                    to,
+                    to.clone(),
                     next.map(|candidate| candidate.text.as_str())
                         .unwrap_or_default(),
                 ),
             );
-            blocked.push(region.id);
+            blocked.push(Ask {
+                path: path.to_string(),
+                id: region.id,
+                before: Some(region.hash),
+                after: to,
+            });
         }
     }
     if blocked.is_empty() {
         return Ok(None);
     }
-    let what = if blocked == [WHOLE_FILE] {
+    let what = if blocked.len() == 1 && blocked[0].id == WHOLE_FILE {
         format!("{path} is locked as a whole file, and this tool call would change it.")
     } else {
         format!(
             "{path} has locked regions that this tool call would change or remove: {}.",
             blocked
                 .iter()
-                .map(|id| format!("`{id}`"))
+                .map(|ask| format!("`{}`", ask.id))
                 .collect::<Vec<_>>()
                 .join(", ")
         )
     };
-    Ok(Some(format!(
-        "lock: {what} {}",
-        approve_hint(&blocked[0], path)
-    )))
+    Ok(Some(Refusal {
+        reason: format!("lock: {what} {}", approve_hint(&blocked[0].id, path)),
+        asks: blocked,
+    }))
+}
+
+/// Whether a change to an agent's hook settings removes the lock hook, turns hooks off,
+/// or adds a hook that could answer lock's question in the permission prompt.
+pub fn weakens_hooks(before: Option<&[u8]>, after: Option<&[u8]>) -> bool {
+    let count = |text: Option<&[u8]>, needle: &str| {
+        text.map_or(0, |bytes| {
+            String::from_utf8_lossy(bytes).matches(needle).count()
+        })
+    };
+    count(after, "lock hook") < count(before, "lock hook")
+        || count(after, "disableAllHooks") > count(before, "disableAllHooks")
+        || count(after, "PermissionRequest") > count(before, "PermissionRequest")
 }
