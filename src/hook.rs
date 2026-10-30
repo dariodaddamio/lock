@@ -180,7 +180,9 @@ fn command_text(value: &Value) -> Option<String> {
 }
 
 fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
+    // Cursor sends an empty `cwd` with shell commands, so an empty one means none.
     let cwd = text(payload, &["cwd"])
+        .filter(|cwd| !cwd.is_empty())
         .map(PathBuf::from)
         .or_else(|| {
             payload
@@ -219,7 +221,11 @@ fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
             ask::prune(&root, session);
             return Ok(Outcome::Quiet);
         }
-        "posttooluse" | "aftershellexecution" => {
+        // Cursor sends both events after a command. Only `postToolUse` can pass a
+        // message to the agent, so it does the check, and older installs that still
+        // run this hook after a command change nothing here.
+        "aftershellexecution" => return Ok(Outcome::Quiet),
+        "posttooluse" => {
             let Some(command) = command.filter(|_| is_shell) else {
                 // An edit ran. If lock asked about it, the person said yes.
                 return Ok(match call.filter(|_| host == Host::Claude) {

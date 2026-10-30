@@ -195,6 +195,17 @@ out="$(call default PostToolUse t3 'Ship.' 'Ship today.')"
 check "a yes is recorded after the edit" 'case "$out" in *approved*) true;; *) false;; esac && "$LOCK" check >/dev/null'
 expect "agent cannot add a hook that answers prompts" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.claude/settings.json","content":"{\u0022a\u0022: \u0022lock hook lock hook lock hook lock hook\u0022\u002c \u0022PermissionRequest\u0022: []}"}}')"
 
+# Cursor's own shapes after a command: an empty cwd, the workspace in workspace_roots,
+# and two events, of which only postToolUse can tell the agent what lock put back.
+cursor() { printf '{"conversation_id":"c1","cwd":"","workspace_roots":["%s"],"hook_event_name":"%s","tool_name":"Shell","tool_input":{"command":"%s","cwd":""},"command":"%s"}' "$ROOT" "$1" "$2" "$2" | "$LOCK" hook cursor; }
+echo 'perl -pi -e '"'"'s/tagline = "[^"]*"/tagline = "Cursor."/; s/free = \d+/free = 7/'"'"' src/app.ts' > tools/cursor.sh
+tagline_before="$(grep tagline src/app.ts)"
+cursor beforeShellExecution "sh tools/cursor.sh" >/dev/null
+sh tools/cursor.sh
+after="$(cursor afterShellExecution "sh tools/cursor.sh")"
+out="$(cursor postToolUse "sh tools/cursor.sh")"
+check "cursor: locked text from a command is put back and reported" '[ "$after" = "{}" ] && [ "$(grep tagline src/app.ts)" = "$tagline_before" ] && grep -q "free = 7" src/app.ts && case "$out" in *additional_context*"put it back"*) true;; *) false;; esac'
+
 # On a failure, show the agent settings, which several checks depend on.
 [ "$fail" -eq 0 ] || { echo "--- .claude/settings.json"; cat .claude/settings.json; }
 echo "passed $pass, failed $fail"

@@ -150,7 +150,6 @@ fn cursor(root: &Path) -> Result<String, String> {
         ),
         ("beforeShellExecution", None, true),
         ("postToolUse", Some("Shell"), false),
-        ("afterShellExecution", None, false),
         ("stop", None, false),
     ] {
         let list = hooks.entry(event).or_insert(json!([]));
@@ -167,6 +166,19 @@ fn cursor(root: &Path) -> Result<String, String> {
         list.as_array_mut()
             .ok_or_else(|| format!("{event} must be a list"))?
             .push(entry);
+        added = true;
+    }
+    // Older installs also ran the hook on `afterShellExecution`, which `postToolUse`
+    // replaces because only it can pass a message to the agent.
+    if let Some(list) = hooks
+        .get_mut("afterShellExecution")
+        .and_then(Value::as_array_mut)
+        && list.iter().any(mentions_lock)
+    {
+        list.retain(|entry| !mentions_lock(entry));
+        if list.is_empty() {
+            hooks.remove("afterShellExecution");
+        }
         added = true;
     }
     if !added {
