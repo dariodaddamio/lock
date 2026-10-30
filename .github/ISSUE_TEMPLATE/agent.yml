@@ -1,0 +1,24 @@
+name: Support another agent
+description: Ask for lock to work with a coding agent that it does not support yet.
+labels: [agent]
+body:
+  - type: input
+    id: agent
+    attributes:
+      label: Agent
+      placeholder: Name, version, and a link to its hook documentation
+    validations:
+      required: true
+  - type: textarea
+    id: input
+    attributes:
+      label: Hook input
+      description: An example of the JSON that the agent sends to a hook before a file edit and before a shell command.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: How a hook refuses a tool call
+      description: The output or exit code that makes the agent skip the call, if you know it.

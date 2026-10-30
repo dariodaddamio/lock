@@ -22,3 +22,19 @@ jobs:
       - name: Scenarios
         shell: bash
         run: LOCK="$PWD/target/release/lock" bash tests/scenarios.sh
+
+  bench:
+    needs: test
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release --locked
+      - name: Speed and size
+        shell: bash
+        run: |
+          bin=target/release/lock; [ -f "$bin.exe" ] && bin="$bin.exe"
+          py="$(command -v python3 || command -v python)"
+          { echo "### ${{ matrix.os }}"; "$py" tests/bench.py "$bin" 40; } | tee -a "$GITHUB_STEP_SUMMARY"

@@ -1,7 +1,8 @@
 name: Release
 
 # Builds lock for each platform when a version tag is pushed and attaches the
-# archives to a GitHub release. install.sh, install.ps1 and action.yml download them.
+# archives and their checksums to a GitHub release. install.sh, install.ps1 and
+# action.yml download them and check them against SHA256SUMS.
 
 on:
   push:
@@ -51,6 +52,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
+      - run: sha256sum lock-* > SHA256SUMS
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" lock-* --repo "${{ github.repository }}" --title "${{ github.ref_name }}" --generate-notes
+        run: gh release create "${{ github.ref_name }}" lock-* SHA256SUMS --repo "${{ github.repository }}" --title "${{ github.ref_name }}" --generate-notes

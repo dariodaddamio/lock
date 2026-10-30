@@ -11,13 +11,22 @@ $repo = 'dariodaddamio/lock'
 $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
 $target = "$arch-pc-windows-msvc"
 $release = if ($env:LOCK_VERSION) { "download/$env:LOCK_VERSION" } else { 'latest/download' }
-$url = "https://github.com/$repo/releases/$release/lock-$target.zip"
+$base = "https://github.com/$repo/releases/$release"
+$name = "lock-$target.zip"
 $custom = [bool]$env:LOCK_INSTALL_DIR
 $dir = if ($custom) { $env:LOCK_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\lock' }
 
 $zip = Join-Path ([IO.Path]::GetTempPath()) ("lock-" + [guid]::NewGuid() + '.zip')
-Write-Host "Downloading $url"
-Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+Write-Host "Downloading $base/$name"
+Invoke-WebRequest -Uri "$base/$name" -OutFile $zip -UseBasicParsing
+$sums = (Invoke-WebRequest -Uri "$base/SHA256SUMS" -UseBasicParsing).Content
+if ($sums -is [byte[]]) { $sums = [Text.Encoding]::UTF8.GetString($sums) }
+$expected = ($sums -split "`n" | Where-Object { $_ -match " $([regex]::Escape($name))$" } | ForEach-Object { ($_ -split ' ')[0] })
+$actual = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+if (-not $expected -or $expected -ne $actual) {
+    Remove-Item $zip
+    throw "lock: the download does not match its checksum in SHA256SUMS, so it was not installed."
+}
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 Expand-Archive -Path $zip -DestinationPath $dir -Force
 Remove-Item $zip

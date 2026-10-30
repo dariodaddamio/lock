@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="572" viewBox="0 0 960 572" role="img">
+<rect width="960" height="572" rx="12" fill="#0d1117"/>
+<rect x="20" y="20" width="920" height="532" rx="10" fill="#161b22" stroke="#30363d"/>
+<text x="44" y="52" fill="#8b949e" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" text-anchor="start" xml:space="preserve">CLAUDE CODE</text>
+<text x="44" y="92" fill="#e6edf3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve">● Update(src/pricing.ts)</text>
+<text x="44" y="116" fill="#ff7b72" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve">  └ lock: src/pricing.ts :: pricing-copy is locked, so this edit was refused</text>
+<text x="44" y="140" fill="#ff7b72" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve">    and nothing was written. Ask the user whether they want this exact change.</text>
+<text x="44" y="164" fill="#e6edf3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve"></text>
+<text x="44" y="188" fill="#e6edf3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve">  pricing-copy is locked. Do you want me to retry the edit?</text>
+<text x="44" y="212" fill="#e3b341" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve">  › 1. Yes, retry the edit</text>
+<text x="44" y="236" fill="#8b949e" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve">    2. No, leave it locked</text>
+<text x="44" y="260" fill="#e6edf3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve"></text>
+<text x="44" y="284" fill="#e6edf3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve">● Update(src/pricing.ts)</text>
+<text x="44" y="308" fill="#e6edf3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve">  Do you want to make this edit to pricing.ts?</text>
+<text x="44" y="332" fill="#8b949e" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve">   3  /* LOCKED: pricing-copy START */</text>
+<rect x="34" y="339" width="880" height="24" fill="#ff7b7226"/>
+<text x="44" y="356" fill="#ff7b72" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve">   4 -export const tagline = &quot;Ship it.&quot;;</text>
+<rect x="34" y="363" width="880" height="24" fill="#56d36426"/>
+<text x="44" y="380" fill="#56d364" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve">   4 +export const tagline = &quot;Pay for what you ship.&quot;;</text>
+<text x="44" y="404" fill="#8b949e" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve">   5  /* LOCKED: pricing-copy END */</text>
+<text x="44" y="428" fill="#e3b341" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve">  › 1. Yes</text>
+<text x="44" y="452" fill="#8b949e" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve">    2. No</text>
+<text x="44" y="476" fill="#e6edf3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve"></text>
+<text x="44" y="500" fill="#e6edf3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve">● The tagline is now &quot;Pay for what you ship.&quot; lock recorded your approval in</text>
+<text x="44" y="524" fill="#e6edf3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="400" text-anchor="start" xml:space="preserve">  .locks/approvals/pricing-copy.e2a33e.e5806a1752f3.json.</text>
+<rect x="836" y="198" width="46.0" height="20" rx="10" fill="#e3b34126"/>
+<text x="859.0" y="212.5" fill="#e3b341" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" text-anchor="middle" xml:space="preserve">Enter</text>
+<rect x="836" y="414" width="46.0" height="20" rx="10" fill="#e3b34126"/>
+<text x="859.0" y="428.5" fill="#e3b341" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" text-anchor="middle" xml:space="preserve">Enter</text>
+</svg>

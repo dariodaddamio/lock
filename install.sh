@@ -26,19 +26,31 @@ case "$(uname -s)-$(uname -m)" in
 esac
 
 if [ -n "${LOCK_VERSION:-}" ]; then
-  url="https://github.com/$repo/releases/download/$LOCK_VERSION/lock-$target.$archive"
+  base="https://github.com/$repo/releases/download/$LOCK_VERSION"
 else
-  url="https://github.com/$repo/releases/latest/download/lock-$target.$archive"
+  base="https://github.com/$repo/releases/latest/download"
 fi
+name="lock-$target.$archive"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-echo "Downloading $url"
-curl -fsSL "$url" -o "$tmp/lock.$archive"
-if [ "$archive" = zip ]; then
-  unzip -q "$tmp/lock.$archive" -d "$tmp"
+echo "Downloading $base/$name"
+curl -fsSL "$base/$name" -o "$tmp/$name"
+curl -fsSL "$base/SHA256SUMS" -o "$tmp/SHA256SUMS"
+expected="$(grep " $name\$" "$tmp/SHA256SUMS" | cut -d ' ' -f 1)"
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(sha256sum "$tmp/$name" | cut -d ' ' -f 1)"
 else
-  tar -xzf "$tmp/lock.$archive" -C "$tmp"
+  actual="$(shasum -a 256 "$tmp/$name" | cut -d ' ' -f 1)"
+fi
+if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+  echo "lock: the download does not match its checksum in SHA256SUMS, so it was not installed." >&2
+  exit 1
+fi
+if [ "$archive" = zip ]; then
+  unzip -q "$tmp/$name" -d "$tmp"
+else
+  tar -xzf "$tmp/$name" -C "$tmp"
 fi
 mkdir -p "$dir"
 mv "$tmp/$binary" "$dir/$binary"

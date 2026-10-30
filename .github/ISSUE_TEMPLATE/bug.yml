@@ -1,0 +1,38 @@
+name: Bug report
+description: lock blocked something it should allow, allowed something it should block, or failed.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what lock did, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The message from lock, or the hook input and output if you have them.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: lock version
+      description: The output of `lock --version`.
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Agent and version
+      placeholder: Claude Code 2.1.312
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [macOS, Linux, Windows]
+    validations:
+      required: true
