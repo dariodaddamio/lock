@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0 - October 30, 2026
+
+This release closes the gaps that an outside audit found in 0.2.1. Each one has a
+scenario in `tests/scenarios.sh`.
+
+- A committed approval record is used up. It cannot approve a change again, so
+  records cannot be replayed or chained.
+- Paths compare without case on Windows and macOS, and symbolic links are resolved,
+  so `.LOCKS/approvals/` or a link to a locked file does not lead around a lock.
+- Whole-file lock entries are normalized, so `./catalog.json` locks `catalog.json`.
+- Claude Code settings are compared as JSON, so changing `disableAllHooks` from
+  `false` to `true` is refused.
+- A tool is matched by its full name, so a tool named `x.read` is not taken for a
+  read.
+- A command that deletes `lock`'s copies, fakes a merge, changes the commit hook,
+  or commits locked text while skipping the hook is undone.
+- Locked text in a file that is not valid UTF-8 is compared and restored byte for
+  byte, and a put-back keeps the rest of the file's bytes and line endings.
+- A crash in the hook refuses the tool call instead of letting it through.
+
 ## 0.2.1 - October 30, 2026
 
 - On Windows, `lock` now recognizes an agent's settings file when its path is

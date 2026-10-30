@@ -28,7 +28,7 @@ fn current(root: &Path, path: &str, id: &str) -> Option<String> {
     if id == WHOLE_FILE {
         return Some(hash(&bytes));
     }
-    regions(path, &String::from_utf8_lossy(&bytes))
+    regions(path, &crate::regions::decode(&bytes).0)
         .ok()?
         .into_iter()
         .find(|region| region.id == id)

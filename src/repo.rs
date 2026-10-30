@@ -262,7 +262,7 @@ fn locks_in(root: &Path, view: &View, paths: &[String], whole: &[String]) -> Res
         let Some(bytes) = bytes.filter(|bytes| !bytes.contains(&0)) else {
             continue;
         };
-        let text = String::from_utf8_lossy(&bytes);
+        let (text, _) = regions::decode(&bytes);
         for region in regions::regions(path, &text)? {
             map.insert(
                 (path.clone(), region.id.clone()),

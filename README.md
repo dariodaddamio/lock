@@ -140,9 +140,10 @@ happen, and you approve again after the agent's turn.
 An approval is for one exact change, not for a period of time. The record stores
 a fingerprint of the locked text before the change and after it, so a retry that
 differs by one character is refused again. After you commit the change, the new
-text is the locked text, and the next change needs a new approval. An approval
-that nobody used stays valid for that one change until you delete its file from
-`.locks/approvals/`.
+text is the locked text, and the next change needs a new approval. A record that
+is committed is used up: it never approves a change again, so an old record
+cannot be replayed or chained with another one. An approval that nobody used stays
+valid for that one change until you delete its file from `.locks/approvals/`.
 
 ## How it works
 
@@ -204,7 +205,13 @@ cannot write an approval record, remove a whole-file lock, change or remove the
 lock hook entries, turn hooks off in its own settings in the repository or in your
 home folder, distrust the Codex hooks, or point git's `core.hooksPath` away from the
 commit check. An edit that would do one of these is refused, and a command that did
-is undone.
+is undone. A command that changes the commit hook in any way, commits locked text
+without approval while skipping the hook, or deletes the copies that `lock` keeps
+while it runs is undone too: its commits are reset with their changes kept, and the
+locked text goes back to its last approved state. Paths are compared the way the
+file system compares them, so a different case or a symbolic link does not lead
+around a lock, and files that are not valid UTF-8 are compared and restored byte for
+byte.
 
 The commit hook does not guess who made a change. A change that no hook saw could
 come from you, from an agent without hooks, or from a process that an agent left
@@ -301,7 +308,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dariodaddamio/lock@v0.2.1
+      - uses: dariodaddamio/lock@v0.3.0
 ```
 
 Second, make sure that a person reviews each approval before it reaches the main
@@ -347,6 +354,8 @@ merged:
   CI still catch the change.
 - An agent without hooks is not checked when it edits. Its change cannot be
   committed without your approval.
+- `git commit --no-verify` run by a person, or in a clone where nobody ran
+  `lock install`, skips the commit check. CI fails the pull request instead.
 
 Two more cases are allowed on purpose. A command that returns locked text to its
 committed state, such as `git checkout` or `git stash`, is not undone, so an agent

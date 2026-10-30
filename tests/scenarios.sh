@@ -381,6 +381,14 @@ expect "audit: S2 whole-file lock with ./ path is enforced" deny "$(j '{"cwd":"R
 git checkout -q HEAD~1 -- .locks/files.json
 git add .locks/files.json; git commit -qm audit-dot-path-cleanup
 
+# Mixed line endings: putting locked text back changes only the locked bytes.
+printf 'a = 1\r\n/* LOCKED: mixed START */\r\nconst m = "keep";\r\n/* LOCKED: mixed END */\r\nb = 2\n' > src/mixed.ts
+git add src/mixed.ts && git commit -qm mixed --no-verify
+echo "perl -pi -e 's/\"keep\"/\"changed\"/; s/b = 2/b = 3/' src/mixed.ts" > tools/mixed.sh
+agent "sh tools/mixed.sh"
+check "a put-back keeps the file's other bytes and line endings" 'grep -q "\"keep\"" src/mixed.ts && [ "$(tail -c 6 src/mixed.ts | od -An -c | tr -d " ")" = "b=3\n" ] && [ "$(tr -cd "\r" < src/mixed.ts | wc -c | tr -d " ")" = 4 ]'
+git rm -qf src/mixed.ts && git commit -qm "remove mixed" --no-verify
+
 # On a failure, show the agent settings, which several checks depend on.
 [ "$fail" -eq 0 ] || { echo "--- .claude/settings.json"; cat .claude/settings.json; }
 echo "passed $pass, failed $fail"

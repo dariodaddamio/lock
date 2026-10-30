@@ -13,7 +13,7 @@ use crate::guard;
 use crate::hook::{HOOK_CONFIGS, weakens_hooks};
 use crate::install::ensure_git_hook;
 use crate::pending;
-use crate::regions::{hash, regions, supports_markers};
+use crate::regions::{decode, hash, regions, splice, supports_markers};
 use crate::repo::{
     FILE_LOCKS, View, WHOLE_FILE, approved, disk_approvals, git, git_dir, git_text,
     parse_file_locks, violations,
@@ -351,7 +351,7 @@ impl Judge<'_> {
         if id == WHOLE_FILE {
             return Some(hash(&bytes));
         }
-        regions(path, &String::from_utf8_lossy(&bytes))
+        regions(path, &decode(&bytes).0)
             .ok()?
             .into_iter()
             .find(|region| region.id == id)
@@ -437,39 +437,10 @@ fn recover_deleted(root: &Path) -> Result<Option<String>, String> {
             fs::read(&full).ok(),
         ) {
             (WHOLE_FILE, Some(head), _) => head.to_vec(),
-            (_, Some(head), Some(current)) => {
-                let old = regions(&problem.before.path, &String::from_utf8_lossy(head));
-                let new = regions(&problem.before.path, &String::from_utf8_lossy(&current));
-                match (old, new) {
-                    (Ok(old), Ok(new)) => {
-                        let Some(wanted) = old
-                            .into_iter()
-                            .find(|r| r.id == problem.before.id)
-                            .map(|region| region.text)
-                        else {
-                            put(root, &problem.before.path, Some(head))?;
-                            restored
-                                .push(format!("{} :: {}", problem.before.path, problem.before.id));
-                            continue;
-                        };
-                        match new.into_iter().find(|r| r.id == problem.before.id) {
-                            Some(found) => {
-                                let current_text = String::from_utf8_lossy(&current);
-                                let normalized = current_text.replace("\r\n", "\n");
-                                let restored = normalized.replacen(&found.text, &wanted, 1);
-                                if current_text.contains("\r\n") {
-                                    restored.replace('\n', "\r\n").into_bytes()
-                                } else {
-                                    restored.into_bytes()
-                                }
-                            }
-                            None => head.to_vec(),
-                        }
-                    }
-                    _ => head.to_vec(),
-                }
+            (id, Some(head), Some(current)) => {
+                splice(&problem.before.path, head, &current, &[id]).unwrap_or_else(|| head.to_vec())
             }
-            (.., Some(head), None) => head.to_vec(),
+            (_, Some(head), None) => head.to_vec(),
             _ => continue,
         };
         put(root, &problem.before.path, Some(&bytes))?;
@@ -677,25 +648,19 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
         if now.as_deref() == Some(before.as_slice()) {
             continue;
         }
-        let before_text = String::from_utf8_lossy(&before).replace("\r\n", "\n");
+        let (before_text, _) = decode(&before);
         let Ok(old) = regions(path, &before_text) else {
             continue;
         };
         if old.is_empty() {
             continue;
         }
-        let now_text = now
-            .as_deref()
-            .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+        let now_text = now.as_deref().map(|bytes| decode(bytes).0);
         let new = now_text
             .as_deref()
             .and_then(|text| regions(path, text).ok());
-        let mut text = now_text
-            .as_deref()
-            .unwrap_or_default()
-            .replace("\r\n", "\n");
         let mut whole_file = new.is_none();
-        let mut changed = false;
+        let mut spliced: Vec<String> = Vec::new();
         for region in &old {
             let next = new
                 .as_ref()
@@ -717,25 +682,23 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
             );
             put_back.push((path.clone(), region.id.clone()));
             match next {
-                Some(candidate) => {
-                    text = text.replacen(&candidate.text, &region.text, 1);
-                    changed = true;
-                }
+                Some(_) => spliced.push(region.id.clone()),
                 None => whole_file = true,
             }
         }
+        // Only the locked bytes go back; the rest of the file keeps the command's
+        // changes, its own bytes, and its line endings.
         if whole_file && put_back.iter().any(|(done, _)| done == path) {
             put(root, path, Some(&before))?;
-        } else if changed {
-            let crlf = now_text
+        } else if !spliced.is_empty() {
+            let ids: Vec<&str> = spliced.iter().map(String::as_str).collect();
+            match now
                 .as_deref()
-                .is_some_and(|text| text.contains("\r\n"));
-            let text = if crlf {
-                text.replace('\n', "\r\n")
-            } else {
-                text
-            };
-            put(root, path, Some(text.as_bytes()))?;
+                .and_then(|now| splice(path, &before, now, &ids))
+            {
+                Some(bytes) => put(root, path, Some(&bytes))?,
+                None => put(root, path, Some(&before))?,
+            }
         }
     }
 

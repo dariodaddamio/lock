@@ -439,7 +439,7 @@ fn normalized(text: &str) -> String {
 fn read(root: &Path, path: &str) -> Option<String> {
     fs::read(root.join(path))
         .ok()
-        .map(|bytes| normalized(&String::from_utf8_lossy(&bytes)))
+        .map(|bytes| normalized(&crate::regions::decode(&bytes).0))
 }
 
 /// Applies one exact replacement the way the edit tools do. An edit that does not
