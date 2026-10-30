@@ -11,6 +11,8 @@
 - In Codex on Windows, the hooks now run. Codex runs hooks in Windows PowerShell,
   so `lock install` now writes the command `lock hook codex`, which PowerShell and
   POSIX shells both run. Run `lock install` again to update the hooks.
+- `lock` is on crates.io as `lock-hook`. `cargo install lock-hook` installs the
+  `lock` command.
 
 ## 0.1.0 - October 29, 2026
 

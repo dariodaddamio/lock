@@ -21,7 +21,7 @@ case "$(uname -s)-$(uname -m)" in
     target="x86_64-pc-windows-msvc"; binary="lock.exe"; archive="zip" ;;
   *)
     echo "lock: there is no prebuilt binary for $(uname -s) $(uname -m)." >&2
-    echo "Build it with Rust instead: cargo install --git https://github.com/$repo --locked" >&2
+    echo "Build it with Rust instead: cargo install lock-hook --locked" >&2
     exit 1 ;;
 esac
 

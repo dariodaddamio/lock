@@ -30,6 +30,8 @@ Or in PowerShell on Windows:
 irm https://raw.githubusercontent.com/dariodaddamio/lock/main/install.ps1 | iex
 ```
 
+With Rust, `cargo install lock-hook` installs the same `lock` command.
+
 Then run this in the root of your repository, and commit the files that it adds:
 
 ```sh
