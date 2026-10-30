@@ -390,6 +390,8 @@ change. Until you do, the commit hook that `lock install` adds refuses the commi
 
 A move counts as removing the locked text from its old path.
 
+![When an agent moves a locked file, lock puts it back and the commit is refused; when you move it, you approve once and the lock lives at the new path](docs/move.svg)
+
 | Who moves it | What happens |
 | --- | --- |
 | An agent, with an edit tool or a patch | The tool call is refused, and nothing changes. |
