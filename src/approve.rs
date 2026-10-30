@@ -4,7 +4,7 @@
 
 use crate::pending::{self, Pending};
 use crate::regions::{hash, regions};
-use crate::repo::{APPROVALS, View, WHOLE_FILE, approvals, git_text, violations};
+use crate::repo::{APPROVALS, View, WHOLE_FILE, git_text, violations};
 use serde_json::json;
 use std::fs;
 use std::io::{BufRead, IsTerminal, Write};
@@ -182,7 +182,8 @@ pub fn run(root: &Path, filters: &[String], reason: Option<&str>) -> Result<i32,
             "An agent command is running in this repository. An approval that you make now is undone when that command ends, so approve again after the agent's turn."
         );
     }
-    let records = approvals(root, &View::Worktree)?;
+    // Only records that HEAD does not have yet count, as in the hook and the commit check.
+    let records = crate::repo::disk_approvals(root)?;
     let mut list: Vec<Candidate> = candidates(root)?
         .into_iter()
         .filter(|item| {

@@ -4,6 +4,7 @@
 //! use them to turn hooks off.
 
 use crate::repo::git_text;
+use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 /// What kind of settings a guarded file holds.
@@ -102,8 +103,20 @@ fn settings(text: Option<&str>, keys: &[&str], value: &str) -> usize {
 pub fn weakens(kind: Kind, before: Option<&str>, after: Option<&str>) -> bool {
     match kind {
         Kind::Claude => {
-            count(after, "disableAllHooks") > count(before, "disableAllHooks")
-                || count(after, "PermissionRequest") > count(before, "PermissionRequest")
+            let old = before.and_then(|text| serde_json::from_str::<Value>(text).ok());
+            let new = after.and_then(|text| serde_json::from_str::<Value>(text).ok());
+            match (old, new) {
+                (Some(old), Some(new)) => {
+                    let old_disabled = old.get("disableAllHooks") == Some(&Value::Bool(true));
+                    let new_disabled = new.get("disableAllHooks") == Some(&Value::Bool(true));
+                    new_disabled && !old_disabled || permission_hooks(&new) > permission_hooks(&old)
+                }
+                (Some(_), None) => true,
+                (None, _) => {
+                    count(after, "disableAllHooks") > count(before, "disableAllHooks")
+                        || count(after, "PermissionRequest") > count(before, "PermissionRequest")
+                }
+            }
         }
         Kind::Codex => {
             let off = |text| settings(text, &["hooks", "codex_hooks"], "false");
@@ -118,6 +131,40 @@ pub fn weakens(kind: Kind, before: Option<&str>, after: Option<&str>) -> bool {
             count(lower(after).as_deref(), "hookspath")
                 != count(lower(before).as_deref(), "hookspath")
         }
+    }
+}
+
+fn permission_hooks(value: &Value) -> usize {
+    match value {
+        Value::Object(object) => object
+            .iter()
+            .map(|(key, value)| {
+                if key == "PermissionRequest" {
+                    hooks(value)
+                } else {
+                    permission_hooks(value)
+                }
+            })
+            .sum(),
+        Value::Array(values) => values.iter().map(permission_hooks).sum(),
+        _ => 0,
+    }
+}
+
+fn hooks(value: &Value) -> usize {
+    match value {
+        Value::Object(object) => object
+            .iter()
+            .map(|(key, value)| {
+                if key == "hooks" {
+                    value.as_array().map_or(0, Vec::len)
+                } else {
+                    hooks(value)
+                }
+            })
+            .sum(),
+        Value::Array(values) => values.iter().map(hooks).sum(),
+        _ => 0,
     }
 }
 
