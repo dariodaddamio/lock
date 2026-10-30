@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/dariodaddamio/lock/actions/workflows/ci.yml/badge.svg)](https://github.com/dariodaddamio/lock/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/dariodaddamio/lock)](https://github.com/dariodaddamio/lock/releases/latest)
+[![crates.io](https://img.shields.io/crates/v/lock-hook)](https://crates.io/crates/lock-hook)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 `lock` prevents coding agents from being able to change parts of your repo that
