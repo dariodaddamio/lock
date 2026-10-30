@@ -1,16 +1,15 @@
-//! Shell commands. A command cannot be replayed before it runs the way an edit can,
-//! because a script decides at run time what it writes. So lock checks what the
-//! command did instead. Before an agent runs a command, lock copies every file that
-//! holds a lock, the lock configuration, and the hook files into the git directory.
-//! After the command, it compares them. A locked region that changed without an
-//! approval is put back, an approval record the command wrote is removed, and the
-//! agent is told why. The copies are removed when the command ends, or when the
-//! agent's turn ends if the command never ran.
-//!
-//! While a copy exists, an agent command is running. The commit hook uses that to tell
-//! a person's edit from an agent's: a change that is already in the copy was made
-//! before the command started, so a person made it by hand.
+//! Shell commands and other tools that cannot be replayed. A command cannot be checked
+//! before it runs the way an edit can, because a script decides at run time what it
+//! writes. So lock checks what the call did instead. Before an agent runs one, lock
+//! copies every file that holds a lock, the lock configuration, the hook files, the
+//! agent settings in the home folder, and git's `core.hooksPath` into the git
+//! directory. After the call, it compares them. A locked region that changed without
+//! an approval is put back, an approval record the call wrote is removed, a setting
+//! that turns hooks off is restored, and the agent is told why. A command that runs in
+//! the background keeps its copy until the turn ends and is checked then. The copies
+//! are removed when the call ends, or when the agent's turn ends.
 
+use crate::guard;
 use crate::hook::{HOOK_CONFIGS, weakens_hooks};
 use crate::pending;
 use crate::regions::{hash, regions, supports_markers};
@@ -94,7 +93,9 @@ fn watched(root: &Path, pre_commit: &str) -> Vec<String> {
 }
 
 /// Copies the watched files before an agent command runs.
-pub fn before(root: &Path, session: &str, command: &str) -> Result<(), String> {
+/// A command that runs in the background reports back before it is done, so its copy
+/// stays until the turn ends and is checked then.
+pub fn before(root: &Path, session: &str, command: &str, background: bool) -> Result<(), String> {
     prune(root, None);
     let dir = runs(root).join(key(session, command));
     fs::create_dir_all(&dir).map_err(|error| format!("could not copy locked files: {error}"))?;
@@ -112,12 +113,31 @@ pub fn before(root: &Path, session: &str, command: &str) -> Result<(), String> {
         };
         files.insert(path, entry);
     }
+    // Agent settings outside the repository, and core.hooksPath, which decide
+    // whether lock runs at all.
+    let mut external = Map::new();
+    for (index, (path, _)) in guard::external().into_iter().enumerate() {
+        let entry = match fs::read(&path) {
+            Ok(bytes) => {
+                let name = format!("external-{index}");
+                fs::write(dir.join(&name), bytes)
+                    .map_err(|error| format!("could not copy {}: {error}", path.display()))?;
+                json!(name)
+            }
+            Err(_) => Value::Null,
+        };
+        external.insert(path.to_string_lossy().into_owned(), entry);
+    }
+    let (local, global) = guard::hooks_paths(root);
     let manifest = json!({
         "session": session,
         "started": now(),
         "head": head,
         "preCommit": pre_commit,
         "files": files,
+        "external": external,
+        "hooksPath": [local, global],
+        "background": background,
     });
     fs::write(dir.join(MANIFEST), format!("{manifest:#}\n"))
         .map_err(|error| format!("could not copy locked files: {error}"))
@@ -156,22 +176,6 @@ impl Snapshot {
         )
     }
 
-    /// The state of one lock in the copy: `None` when the copy does not know it.
-    fn state(&self, path: &str, id: &str) -> Option<Option<String>> {
-        let bytes = self.read(path)?;
-        if id == WHOLE_FILE {
-            return Some(bytes.as_deref().map(hash));
-        }
-        let text = String::from_utf8_lossy(bytes.as_deref()?).into_owned();
-        let found = regions(path, &text).ok()?;
-        Some(
-            found
-                .into_iter()
-                .find(|region| region.id == id)
-                .map(|region| region.hash),
-        )
-    }
-
     fn fresh(&self) -> bool {
         let started = self.manifest.get("started").and_then(Value::as_u64);
         started.is_some_and(|at| now().saturating_sub(at) < STALE_SECONDS)
@@ -206,18 +210,13 @@ fn running(root: &Path) -> Vec<Snapshot> {
         .collect()
 }
 
-/// Whether a lock's staged state was made while an agent command ran: some running
-/// command's copy holds a different state for it.
-pub fn made_by_agent(root: &Path, path: &str, id: &str, staged: Option<&str>) -> bool {
-    running(root).iter().any(|snapshot| {
-        snapshot
-            .state(path, id)
-            .is_some_and(|state| state.as_deref() != staged)
-    })
+/// Whether an agent command may be running in this repository now.
+pub fn agent_running(root: &Path) -> bool {
+    !running(root).is_empty()
 }
 
-/// Adds a record that the commit hook wrote to every running copy, so the check after
-/// the command does not take it for the command's own work.
+/// Adds a record that a person approved to every running copy, so the check after an
+/// agent command does not take it for the command's own work.
 pub fn keep(root: &Path, file: &str) {
     let Ok(bytes) = fs::read(root.join(file)) else {
         return;
@@ -330,6 +329,27 @@ impl Judge<'_> {
 
 /// Checks and repairs what an agent command changed. Returns a message for the agent
 /// when lock put something back.
+/// At the end of a turn: checks each background command of the session.
+pub fn settle_background(root: &Path, session: &str) -> Result<Option<String>, String> {
+    let mut messages = Vec::new();
+    for snapshot in snapshots(root) {
+        let background = snapshot.manifest.get("background") == Some(&Value::Bool(true));
+        if !background || snapshot.field("session") != Some(session) {
+            continue;
+        }
+        let result = settle(root, &snapshot);
+        let _ = fs::remove_dir_all(&snapshot.dir);
+        messages.extend(result?);
+    }
+    Ok((!messages.is_empty()).then(|| {
+        messages.join(
+            "
+
+",
+        )
+    }))
+}
+
 pub fn after(root: &Path, session: &str, command: &str) -> Result<Option<String>, String> {
     let Some(snapshot) = Snapshot::load(runs(root).join(key(session, command))) else {
         return Ok(None);
@@ -396,6 +416,48 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
         if weakened {
             put(root, path, before.as_deref())?;
             undone.push(path.clone());
+        }
+    }
+
+    // Agent settings outside the repository may not turn hooks off.
+    let external = snapshot
+        .manifest
+        .get("external")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    for (path, copy) in external {
+        let full = PathBuf::from(&path);
+        let Some(kind) = guard::external_kind(&full) else {
+            continue;
+        };
+        let before = copy
+            .as_str()
+            .map(|name| fs::read(snapshot.dir.join(name)).unwrap_or_default());
+        let now = fs::read(&full).ok();
+        let text = |bytes: &Option<Vec<u8>>| {
+            bytes
+                .as_deref()
+                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        };
+        if guard::weakens(kind, text(&before).as_deref(), text(&now).as_deref()) {
+            match &before {
+                Some(bytes) => fs::write(&full, bytes),
+                None => fs::remove_file(&full),
+            }
+            .map_err(|error| format!("could not restore {path}: {error}"))?;
+            undone.push(path);
+        }
+    }
+    if let Some([local, global]) = snapshot
+        .manifest
+        .get("hooksPath")
+        .and_then(Value::as_array)
+        .and_then(|pair| <&[Value; 2]>::try_from(pair.as_slice()).ok())
+    {
+        let text = |value: &Value| value.as_str().map(str::to_string);
+        if guard::restore_hooks_paths(root, &(text(local), text(global))) {
+            undone.push("core.hooksPath".into());
         }
     }
 

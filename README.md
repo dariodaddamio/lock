@@ -48,7 +48,9 @@ whether you trust the folder, Codex asks you to trust the folder and then to rev
 the new hooks, and Cursor reads `.cursor/hooks.json` when it opens the project. An
 agent finds `lock` on the PATH that it had when it started, so restart an agent
 that was already running when you installed `lock`. Codex keeps a background
-server, which `codex app-server daemon restart` restarts.
+server, which `codex app-server daemon restart` restarts. Codex also stops running
+a hook that changed until you review it again, so after `lock install` updates the
+hooks, open `/hooks` in Codex and trust them.
 
 ## At a glance
 
@@ -69,8 +71,8 @@ repository:
 | Part | What it is | Who writes it |
 | --- | --- | --- |
 | Lock markers | Two comment lines, `LOCKED: <id> START` and `LOCKED: <id> END`, around the text that must not change | Your agent, when you ask it to lock something |
-| Hooks | Settings that make each agent run `lock` before each edit, around each shell command, and at the end of each turn, and a git hook that runs `lock` before each commit | `lock install` |
-| Approval records | Small JSON files in `.locks/approvals/`, each of which allows one exact change to a locked region | You, when you approve a change or commit your own edit |
+| Hooks | Settings that make each agent run `lock` before and after each tool call and at the end of each turn, and a git hook that runs `lock` before each commit | `lock install` |
+| Approval records | Small JSON files in `.locks/approvals/`, each of which allows one exact change to a locked region | You, with `lock approve` or in the Claude Code chat |
 
 `lock install` writes these files, and running it again changes nothing:
 
@@ -97,9 +99,9 @@ of four things:
 | You want to | You do this | What lock does |
 | --- | --- | --- |
 | Lock some text | Ask your agent, for example "Lock the pricing tagline." | The agent adds the markers. A new lock needs no approval, because it only adds protection. |
-| Change locked text yourself | Edit it in your editor and commit as usual | The commit hook records your edit as an approval. |
+| Change locked text yourself | Edit it, run `lock approve` in your terminal, and commit | The approval goes into the same commit. A commit of locked text without an approval is refused. |
 | Let the agent change locked text | Ask for the change, and approve it when `lock` asks | Only the exact change that you approved goes through. |
-| Remove a lock | Delete the markers yourself, or approve the agent's edit that deletes them | The lock is gone after the commit. |
+| Remove a lock | Delete the markers and approve that, or approve the agent's edit that deletes them | The lock is gone after the commit. |
 
 ## Approve a change
 
@@ -119,15 +121,19 @@ and you approve it in your terminal.
 
 ### In your terminal
 
-Codex and Cursor cannot ask you from a hook, and a shell command cannot be checked
-before it runs, so for these you run `lock approve` in your own terminal. It shows
-each blocked change as a diff and records the ones that you accept:
+Codex and Cursor cannot ask you from a hook, a shell command cannot be checked
+before it runs, and your own edits need an approval too, so for these you run
+`lock approve` in your own terminal. It shows each blocked or uncommitted change to
+locked text as a diff and records the ones that you accept:
 
 ![lock approve shows the diff of the locked region, the person types APPROVE, and the approval is recorded](docs/approve.svg)
 
 Then tell the agent to retry, and commit the new file in `.locks/approvals/` with
 the change. `lock approve` runs only when a person types into the terminal, so
-neither an agent nor `! lock approve` inside Claude Code can run it.
+neither an agent nor `! lock approve` inside Claude Code can run it. An agent could
+still fake a terminal, so an approval that appears while an agent command is
+running is undone when that command ends. `lock approve` warns you when that would
+happen, and you approve again after the agent's turn.
 
 ### How long an approval lasts
 
@@ -140,13 +146,14 @@ that nobody used stays valid for that one change until you delete its file from
 
 ## How it works
 
-`lock` checks each change to locked text at four points:
+`lock` checks each change to locked text at five points:
 
 | When | What lock checks | What happens to an unapproved change |
 | --- | --- | --- |
 | Before an agent edit | The edit, applied to the file in memory | The edit is refused, and nothing is written. |
-| Around an agent shell command | Each locked file, before and after the command | The locked text is put back, and the agent is told why. |
-| Before a commit | Each locked change in the commit | Your own edit is recorded as an approval. A change made by an agent command stops the commit. |
+| Around any other agent tool call, such as a shell command or an MCP tool | Each locked file, the lock configuration, the agent settings, and git's `core.hooksPath`, before and after the call | The change is put back, and the agent is told why. |
+| At the end of a turn | Each command that the agent ran in the background | The locked text is put back, and you are told. |
+| Before a commit | Each locked change in the commit | The commit is refused until you approve the change. |
 | In CI | Each locked change since the base branch | The check fails. |
 
 An agent's edit tool sends the hook the exact text that it wants to replace, so
@@ -185,22 +192,31 @@ The agent sends:
 </details>
 
 A script can write anything, so `lock` checks its result instead. Before a shell
-command runs, `lock` copies each file that holds a lock, and after the command it
-puts back any locked text that changed without approval. All other changes stay.
-The same check undoes a command that writes an approval record, edits the lock
-configuration, or takes the hook out of the agent settings.
+command or any other tool that can write, such as an MCP tool, `lock` copies each
+file that holds a lock, and after the call it puts back any locked text that changed
+without approval. All other changes stay. A command that runs in the background
+reports back before it is done, so `lock` checks it again when the turn ends.
 
 ![A script changes an unlocked line and a locked line, and lock keeps the first change and puts back the second](docs/script-before-after.svg)
 
-The commit hook tells your edits from an agent's edits by when they happen. While
-an agent command runs, `lock` holds a copy of each locked file, so a change that is
-already in that copy was made before the command started and is yours. When the
-agent's turn ends, `lock` removes the copies. If `lock` cannot check an edit, the
-hook refuses the edit instead of letting it through.
+The same check guards everything that decides whether `lock` runs at all. An agent
+cannot write an approval record, remove a whole-file lock, change or remove the
+lock hook entries, turn hooks off in its own settings in the repository or in your
+home folder, distrust the Codex hooks, or point git's `core.hooksPath` away from the
+commit check. An edit that would do one of these is refused, and a command that did
+is undone.
+
+The commit hook does not guess who made a change. A change that no hook saw could
+come from you, from an agent without hooks, or from a process that an agent left
+running, so every locked change needs an approval before it can be committed. If
+`lock` cannot check an edit, the hook refuses the edit instead of letting it
+through.
 
 ## Speed and size
 
-Each hook is a short process that starts, checks, and exits. These are the medians
+Each hook is a short process that starts, checks, and exits. A tool that only reads,
+such as a file read or a search, passes as soon as `lock` sees its name. These are
+the medians
 of 40 runs on GitHub's hosted runners, in a generated repository with 10,000 files
 and 300 locks. The [CI benchmark](.github/workflows/ci.yml) measures them again on
 each push to the main branch, and it also measures repositories with 10 and 1,000
@@ -285,7 +301,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dariodaddamio/lock@v0.1.1
+      - uses: dariodaddamio/lock@v0.2.0
 ```
 
 Second, make sure that a person reviews each approval before it reaches the main
@@ -308,18 +324,29 @@ review from Code Owners**, and add these lines to `.github/CODEOWNERS`:
 | `lock approve [<id> or <path>...] [--reason <text>]` | Shows each blocked or unrecorded change and records the ones that you accept. |
 | `lock list` | Shows each lock in the working tree. |
 | `lock check` | Compares the working tree with `HEAD`. |
-| `lock check --staged --record` | Checks the staged changes and records your own edits. The commit hook runs this. |
+| `lock check --staged` | Checks the staged changes, and fails for a locked change without an approval. The commit hook runs this. |
 | `lock check --base <ref>` | Compares `HEAD` with the point where it branched from `<ref>`. CI runs this. |
 | `lock uninstall` | Removes the hooks that `lock install` added. The markers and `.locks/` stay. |
 | `lock hook claude`, `lock hook codex`, `lock hook cursor` | The agent hook. The agent runs it and sends one tool call on stdin. |
 
 ## Limits
 
-`lock` knows which changes an agent made because the agent's hooks report each
-edit and command. A change that no hook reports looks like your own edit, so the
-commit hook records it. That happens when an agent without hooks edits a file, or
-when a process that an agent started in the background writes to a locked file
-after the command has ended.
+`lock` is built so that no tool call, script, or settings change by an agent can
+change locked text without your approval. An agent runs as you, on your machine, so
+a few cases remain, and each one is caught before the change can be committed or
+merged:
+
+- A process that an agent starts and that keeps running after the agent's turn
+  ends can still change a locked file. The change stays on disk, but it cannot be
+  committed until you approve it, and `lock approve` shows it to you first.
+- Such a process could also write an approval record, because a record is a plain
+  file. On the main branch, code owner review of `.locks/` makes sure that a person
+  accepted each record.
+- Codex lets a call through when its hook fails, when `lock` is not installed, or
+  when the hooks changed and you have not reviewed them yet. The commit check and
+  CI still catch the change.
+- An agent without hooks is not checked when it edits. Its change cannot be
+  committed without your approval.
 
 Two more cases are allowed on purpose. A command that returns locked text to its
 committed state, such as `git checkout` or `git stash`, is not undone, so an agent
@@ -331,10 +358,6 @@ Approval in the Claude Code chat trusts Claude Code's edit prompt. A
 `PermissionRequest` hook or a permission callback could answer that prompt without
 you, so `lock` refuses the edit instead of asking when it finds such a hook in your
 Claude Code settings or plugins, and agents cannot add one.
-
-An approval record is a plain file. The hooks stop agents from writing one, and a
-person can still write one by hand, so on the main branch code owner review of
-`.locks/` makes sure that a person accepted each record.
 
 ## Questions
 
@@ -349,14 +372,12 @@ person can still write one by hand, so on the main branch code owner review of
 
 ### What if the agent commits my edit?
 
-That works. When the agent runs `git commit`, the commit hook compares each locked
-change with the copy taken when the command started. Your edit was already there,
-so `lock` records it as yours, and a change that the same command made is refused.
+The commit is refused until you approve your edit with `lock approve`. After that,
+the agent's commit goes through, with your approval in it.
 
 ### Can I add another agent?
 
-Yes, if the agent can run a hook before each tool call and after each shell
-command. [Open an issue](https://github.com/dariodaddamio/lock/issues/new?template=agent.yml)
+Yes, if the agent can run a hook before and after each tool call. [Open an issue](https://github.com/dariodaddamio/lock/issues/new?template=agent.yml)
 with an example of the JSON that the agent sends to its hooks.
 
 ### How do I remove lock?

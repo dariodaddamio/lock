@@ -175,6 +175,13 @@ pub fn require_person(command: &str) -> Result<(), String> {
 
 pub fn run(root: &Path, filters: &[String], reason: Option<&str>) -> Result<i32, String> {
     require_person("lock approve")?;
+    if crate::watch::agent_running(root) {
+        // The check after that command undoes any approval made while it ran, because
+        // an agent could fake a terminal. lock cannot tell the two apart.
+        println!(
+            "An agent command is running in this repository. An approval that you make now is undone when that command ends, so approve again after the agent's turn."
+        );
+    }
     let records = approvals(root, &View::Worktree)?;
     let mut list: Vec<Candidate> = candidates(root)?
         .into_iter()

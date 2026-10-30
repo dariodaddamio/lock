@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.2.0 - October 30, 2026
+
+This release closes the ways around `lock` that were known after 0.1.1.
+
+- A commit of locked text needs an approval, including for your own edits. The
+  commit hook no longer records an edit as yours, because a change that no hook saw
+  can also come from an agent without hooks or from a process that an agent left
+  running. Run `lock approve`, and then commit.
+- The hooks now run for every tool call. A tool that `lock` cannot read, such as an
+  MCP tool, is checked by what it changed, like a shell command.
+- A command that runs in the background is checked again when the turn ends.
+- An agent cannot turn hooks off in its own settings in your home folder, distrust
+  the Codex hooks, or point git's `core.hooksPath` away from the commit check.
+- An agent cannot change the lock hook entries in any way, because Codex stops
+  running a changed hook until a person reviews it.
+- `lock approve` warns you when an agent command is running, because an approval
+  made then is undone when that command ends.
+- Run `lock install` again to update the hooks. In Codex, open `/hooks` and trust
+  them again.
+
 ## 0.1.1 - October 29, 2026
 
 - In Cursor, `lock` now checks each shell command. Cursor sends an empty working

@@ -1,6 +1,6 @@
 //! `lock install`: registers the agent hook with Claude Code, Codex, and Cursor, before
-//! each edit and command, after each command, and at the end of each turn. It adds the
-//! staged check to the git pre-commit hook. Running it again changes nothing.
+//! and after each tool call and at the end of each turn. It adds the staged check to
+//! the git pre-commit hook. Running it again changes nothing.
 
 use crate::repo::git_text;
 use serde_json::{Map, Value, json};
@@ -98,37 +98,22 @@ fn agent_hooks(
     Ok(format!("Added the lock hook to {file}."))
 }
 
+/// Every tool goes through the hook: edits are checked before they run, and any other
+/// tool that can write, such as a shell or an MCP tool, is checked by what it changed.
 fn claude(root: &Path) -> Result<String, String> {
     agent_hooks(
         root,
         ".claude/settings.json",
-        &[
-            (
-                "PreToolUse",
-                Some("Edit|MultiEdit|Write|NotebookEdit|Bash|PowerShell"),
-            ),
-            // After an edit, lock records an approval that the person gave in the prompt.
-            ("PostToolUse", Some("Edit|MultiEdit|Write|Bash|PowerShell")),
-            ("Stop", None),
-        ],
+        &[("PreToolUse", None), ("PostToolUse", None), ("Stop", None)],
         "claude",
     )
 }
 
-const CODEX_SHELL: &str =
-    "Bash|Shell|PowerShell|exec|exec_command|functions\\.exec|functions\\.exec_command|local_shell";
-
 fn codex(root: &Path) -> Result<String, String> {
-    let pre =
-        format!("apply_patch|functions\\.apply_patch|Edit|Write|MultiEdit|Delete|{CODEX_SHELL}");
     agent_hooks(
         root,
         ".codex/hooks.json",
-        &[
-            ("PreToolUse", Some(&pre)),
-            ("PostToolUse", Some(CODEX_SHELL)),
-            ("Stop", None),
-        ],
+        &[("PreToolUse", None), ("PostToolUse", None), ("Stop", None)],
         "codex",
     )
 }
@@ -142,31 +127,33 @@ fn cursor(root: &Path) -> Result<String, String> {
     let mut added = false;
     // The checks before a call fail closed. The ones after a command and at the end of
     // a turn cannot stop anything, so they only repair and report.
-    for (event, matcher, fail_closed) in [
-        (
-            "preToolUse",
-            Some("Write|StrReplace|Edit|MultiEdit|Delete|ApplyPatch"),
-            true,
-        ),
-        ("beforeShellExecution", None, true),
-        ("postToolUse", Some("Shell"), false),
-        ("stop", None, false),
+    for (event, fail_closed) in [
+        ("preToolUse", true),
+        ("beforeShellExecution", true),
+        ("postToolUse", false),
+        ("stop", false),
     ] {
-        let list = hooks.entry(event).or_insert(json!([]));
-        if mentions_lock(list) {
-            continue;
-        }
+        let list = hooks
+            .entry(event)
+            .or_insert(json!([]))
+            .as_array_mut()
+            .ok_or_else(|| format!("{event} must be a list"))?;
         let mut entry = json!({ "command": "lock hook cursor" });
         if fail_closed {
             entry["failClosed"] = json!(true);
         }
-        if let Some(matcher) = matcher {
-            entry["matcher"] = json!(matcher);
+        // An entry from an older lock, such as one limited to some tools, is replaced.
+        match list.iter_mut().find(|existing| mentions_lock(existing)) {
+            Some(existing) if *existing == entry => {}
+            Some(existing) => {
+                *existing = entry;
+                added = true;
+            }
+            None => {
+                list.push(entry);
+                added = true;
+            }
         }
-        list.as_array_mut()
-            .ok_or_else(|| format!("{event} must be a list"))?
-            .push(entry);
-        added = true;
     }
     // Older installs also ran the hook on `afterShellExecution`, which `postToolUse`
     // replaces because only it can pass a message to the agent.
@@ -204,7 +191,7 @@ fn git_hook(root: &Path) -> Result<String, String> {
     let hook = dir.join("pre-commit");
     let current = fs::read_to_string(&hook).unwrap_or_else(|_| "#!/bin/sh\n".into());
     let line = format!(
-        "{{ command -v lock >/dev/null 2>&1 || {{ echo 'lock is not installed: {HOME}' >&2; exit 1; }}; lock check --staged --record || exit 1; }} # lock"
+        "{{ command -v lock >/dev/null 2>&1 || {{ echo 'lock is not installed: {HOME}' >&2; exit 1; }}; lock check --staged || exit 1; }} # lock"
     );
     if current.lines().any(|existing| existing == line) {
         return Ok("The pre-commit hook already runs the lock check.".into());

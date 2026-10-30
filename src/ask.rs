@@ -54,15 +54,6 @@ pub fn possible(root: &Path, payload: &Value) -> bool {
     mode.is_some_and(|mode| PROMPTING.contains(&mode)) && !answered_automatically(root)
 }
 
-fn config_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
-        return Some(PathBuf::from(dir));
-    }
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(|home| PathBuf::from(home).join(".claude"))
-}
-
 fn managed_settings() -> PathBuf {
     if cfg!(windows) {
         PathBuf::from(r"C:\Program Files\ClaudeCode\managed-settings.json")
@@ -79,7 +70,7 @@ fn answered_automatically(root: &Path) -> bool {
         root.join(".claude/settings.local.json"),
         managed_settings(),
     ];
-    if let Some(dir) = config_dir() {
+    if let Some(dir) = crate::guard::claude_dir() {
         files.push(dir.join("settings.json"));
         files.push(dir.join("settings.local.json"));
         for install in installed_plugins(&dir) {

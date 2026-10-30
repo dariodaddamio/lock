@@ -1,9 +1,9 @@
-//! The agent hook. Claude Code, Codex, and Cursor run it before every file edit and
-//! shell command, after every shell command, and when the agent's turn ends. Before an
-//! edit, it replays the proposed tool call against the file in memory and denies the
+//! The agent hook. Claude Code, Codex, and Cursor run it before and after every tool
+//! call, and when the agent's turn ends. Before an edit, it replays the proposed tool call against the file in memory and denies the
 //! call when a locked region would change without a person's approval, so the file on
 //! disk is never touched. In Claude Code, the same edit tried again asks the person in
-//! the permission prompt, see `ask`. Shell commands are checked by `watch`.
+//! the permission prompt, see `ask`. Shell commands and other tools that can write
+//! are checked by `watch`, and agent settings by `guard`.
 
 use crate::ask::{self, Ask};
 use crate::paths::{eq, relative};
@@ -11,7 +11,7 @@ use crate::regions::{hash, regions, supports_markers};
 use crate::repo::{
     APPROVALS, FILE_LOCKS, WHOLE_FILE, approved, disk_approvals, find_root, parse_file_locks,
 };
-use crate::{patch, pending, shell, watch};
+use crate::{guard, patch, pending, shell, watch};
 use serde_json::{Value, json};
 use std::fs;
 use std::io::Read;
@@ -34,7 +34,7 @@ pub const HOOK_CONFIGS: [&str; 4] = [
     ".cursor/hooks.json",
     ".codex/hooks.json",
 ];
-const SHELL_TOOLS: [&str; 8] = [
+const SHELL_TOOLS: [&str; 9] = [
     "exec",
     "bash",
     "powershell",
@@ -43,6 +43,47 @@ const SHELL_TOOLS: [&str; 8] = [
     "run_terminal_cmd",
     "exec_command",
     "local_shell",
+    "monitor",
+];
+/// Tools that only read, plan, or talk, so they cannot change a file. Any tool that is
+/// not on this list and is not a known edit or shell tool, such as an MCP tool, is
+/// checked like a shell command: lock copies the locked files before it runs and
+/// compares them after.
+const SAFE_TOOLS: [&str; 34] = [
+    "read",
+    "read_file",
+    "grep",
+    "glob",
+    "ls",
+    "list_dir",
+    "listdir",
+    "file_search",
+    "filesearch",
+    "codebase_search",
+    "semanticsearch",
+    "webfetch",
+    "web_fetch",
+    "websearch",
+    "web_search",
+    "todowrite",
+    "todo_write",
+    "update_plan",
+    "task",
+    "agent",
+    "askuserquestion",
+    "exitplanmode",
+    "enterplanmode",
+    "skill",
+    "toolsearch",
+    "view_image",
+    "bashoutput",
+    "taskoutput",
+    "notebookread",
+    "killshell",
+    "taskstop",
+    "sendmessage",
+    "listagents",
+    "read_lints",
 ];
 
 /// What the hook answers.
@@ -57,6 +98,8 @@ pub enum Outcome {
     Report(String),
     /// After an edit ran: lock tells the agent what it recorded.
     Note(String),
+    /// At the end of a turn: lock tells the person what it put back.
+    Notice(String),
 }
 
 pub fn run(host: Host) -> i32 {
@@ -105,6 +148,15 @@ pub fn run(host: Host) -> i32 {
         }
         Ok(Outcome::Note(message)) => {
             println!("{}", note(host, &message));
+            0
+        }
+        Ok(Outcome::Notice(message)) => {
+            // Cursor's stop hook can only send the agent on, so it stays quiet there.
+            match host {
+                Host::Claude | Host::Codex => println!("{}", json!({ "systemMessage": message })),
+                Host::Cursor => println!("{{}}"),
+            }
+            eprintln!("{message}");
             0
         }
         Err(error) => {
@@ -214,33 +266,50 @@ fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
         .unwrap_or(&Value::Null);
     let command = command_text(input).or_else(|| command_text(payload));
     let is_shell = SHELL_TOOLS.contains(&tool.as_str()) || (input.is_null() && command.is_some());
+    let background =
+        tool == "monitor" || input.get("run_in_background") == Some(&Value::Bool(true));
 
     match event.as_str() {
         "stop" | "sessionend" => {
+            // A command that runs in the background may still change files after it
+            // reported back, so lock checks it when the turn ends.
+            let message = watch::settle_background(&root, session);
             watch::prune(&root, Some(session));
             ask::prune(&root, session);
-            return Ok(Outcome::Quiet);
+            return Ok(match message {
+                Ok(Some(message)) => Outcome::Notice(message),
+                Ok(None) => Outcome::Quiet,
+                Err(error) => Outcome::Notice(format!(
+                    "lock could not check what a background command changed: {error}. Run `lock check`."
+                )),
+            });
         }
         // Cursor sends both events after a command. Only `postToolUse` can pass a
         // message to the agent, so it does the check, and older installs that still
         // run this hook after a command change nothing here.
         "aftershellexecution" => return Ok(Outcome::Quiet),
         "posttooluse" => {
-            let Some(command) = command.filter(|_| is_shell) else {
-                // An edit ran. If lock asked about it, the person said yes.
-                return Ok(match call.filter(|_| host == Host::Claude) {
-                    Some(call) => match ask::confirm(&root, call) {
-                        Ok(Some(message)) => Outcome::Note(message),
-                        Ok(None) => Outcome::Quiet,
-                        Err(error) => Outcome::Report(format!(
+            if background {
+                return Ok(Outcome::Quiet);
+            }
+            // An edit ran. If lock asked about it, the person said yes.
+            if let Some(call) = call.filter(|_| host == Host::Claude && !is_shell) {
+                match ask::confirm(&root, call) {
+                    Ok(Some(message)) => return Ok(Outcome::Note(message)),
+                    Ok(None) => {}
+                    Err(error) => {
+                        return Ok(Outcome::Report(format!(
                             "lock could not record the approval for this edit: {error}. Ask the user to run `lock approve`."
-                        )),
-                    },
-                    None => Outcome::Quiet,
-                });
+                        )));
+                    }
+                }
+            }
+            let key = match command.filter(|_| is_shell) {
+                Some(command) => command,
+                None => other_key(&tool, call, input),
             };
-            // The command already ran, so an error here cannot block it; it is reported.
-            return Ok(match watch::after(&root, session, &command) {
+            // The call already ran, so an error here cannot block it; it is reported.
+            return Ok(match watch::after(&root, session, &key) {
                 Ok(None) => Outcome::Quiet,
                 Ok(Some(message)) => Outcome::Report(message),
                 Err(error) => Outcome::Report(format!(
@@ -271,10 +340,19 @@ fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
         if !refusals.is_empty() {
             return Ok(Outcome::Deny(reasons(&refusals)));
         }
-        watch::before(&root, session, &command)?;
+        watch::before(&root, session, &command, background)?;
+        return Ok(Outcome::Allow);
+    } else if SAFE_TOOLS.contains(&tool.as_str()) {
         return Ok(Outcome::Allow);
     } else {
-        proposals(&root, &cwd, &tool, input, payload)?
+        let changes = proposals(&root, &cwd, &tool, input, payload)?;
+        if changes.is_empty() {
+            // A tool that lock cannot read, such as an MCP tool, is checked by what it
+            // changed.
+            watch::before(&root, session, &other_key(&tool, call, input), false)?;
+            return Ok(Outcome::Allow);
+        }
+        changes
     };
     let refusals = judge_all(&root, &changes)?;
     if refusals.is_empty() {
@@ -324,6 +402,14 @@ fn reasons(refusals: &[Refusal]) -> String {
         .map(|refusal| refusal.reason.as_str())
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// The key that ties the check before a tool call to the check after it.
+fn other_key(tool: &str, call: Option<&str>, input: &Value) -> String {
+    match call {
+        Some(call) => format!("tool {tool} {call}"),
+        None => format!("tool {tool} {input}"),
+    }
 }
 
 fn judge_all(root: &Path, changes: &[Change]) -> Result<Vec<Refusal>, String> {
@@ -485,8 +571,16 @@ fn proposals(
     let Some(raw) = raw else {
         return Ok(Vec::new());
     };
-    let Some(path) = relative(root, cwd, raw) else {
-        return Ok(Vec::new());
+    // A file outside the repository matters only if it is an agent's own settings.
+    let path = match relative(root, cwd, raw) {
+        Some(path) => path,
+        None => {
+            let full = cwd.join(raw);
+            if guard::external_kind(&full).is_none() {
+                return Ok(Vec::new());
+            }
+            full.to_string_lossy().into_owned()
+        }
     };
     let before = read(root, &path);
     let after = if tool.contains("delete") || tool.contains("remove") {
@@ -537,6 +631,20 @@ fn judge(root: &Path, change: &Change) -> Result<Option<Refusal>, String> {
         After::Content(text) => Some(text.as_str()),
         _ => None,
     };
+
+    // An agent's settings can sit inside the repository too, such as in a repository
+    // of dotfiles, so the full path decides.
+    let settings = guard::external_kind(&root.join(path))
+        .or_else(|| eq(path, ".git/config").then_some(guard::Kind::Git));
+    if let Some(kind) = settings {
+        let unknown = matches!(change.after, After::Unknown(_));
+        if unknown || guard::weakens(kind, before, after) {
+            return Ok(Refusal::hard(format!(
+                "lock: this edit to {path} would turn hooks off, trust fewer hooks, or move the git hooks. Agents cannot do that. Ask the user."
+            )));
+        }
+        return Ok(None);
+    }
 
     if path == ".locks" || path.starts_with(".locks/") {
         if eq(path, FILE_LOCKS)
@@ -680,15 +788,60 @@ fn judge(root: &Path, change: &Change) -> Result<Option<Refusal>, String> {
     }))
 }
 
-/// Whether a change to an agent's hook settings removes the lock hook, turns hooks off,
-/// or adds a hook that could answer lock's question in the permission prompt.
+/// The entries in an agent's hook settings that run lock, each as its JSON text, or
+/// `None` when the settings are not valid JSON.
+fn lock_entries(bytes: Option<&[u8]>) -> Option<Vec<String>> {
+    fn walk(value: &Value, found: &mut Vec<String>) {
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    if item.is_object() && item.to_string().contains("lock hook") {
+                        found.push(item.to_string());
+                    }
+                    walk(item, found);
+                }
+            }
+            Value::Object(map) => map.values().for_each(|value| walk(value, found)),
+            _ => {}
+        }
+    }
+    let Some(bytes) = bytes else {
+        return Some(Vec::new());
+    };
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    let mut found = Vec::new();
+    walk(&value, &mut found);
+    found.sort();
+    Some(found)
+}
+
+/// Whether a change to an agent's hook settings touches the lock hook, turns hooks off,
+/// or adds a hook that could answer lock's question in the permission prompt. Any
+/// change to the lock hook counts, because Codex stops running a hook that changed
+/// until a person reviews it again.
 pub fn weakens_hooks(before: Option<&[u8]>, after: Option<&[u8]>) -> bool {
     let count = |text: Option<&[u8]>, needle: &str| {
         text.map_or(0, |bytes| {
             String::from_utf8_lossy(bytes).matches(needle).count()
         })
     };
-    count(after, "lock hook") < count(before, "lock hook")
+    let entries_changed = match (lock_entries(before), lock_entries(after)) {
+        (Some(old), Some(new)) => {
+            let mut left = new;
+            !old.iter()
+                .all(|entry| match left.iter().position(|item| item == entry) {
+                    Some(at) => {
+                        left.remove(at);
+                        true
+                    }
+                    None => false,
+                })
+        }
+        // Settings that no longer parse turn every hook in them off.
+        (Some(old), None) => !old.is_empty(),
+        (None, _) => count(after, "lock hook") < count(before, "lock hook"),
+    };
+    entries_changed
         || count(after, "disableAllHooks") > count(before, "disableAllHooks")
         || count(after, "PermissionRequest") > count(before, "PermissionRequest")
 }

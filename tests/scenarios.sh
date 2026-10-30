@@ -6,6 +6,7 @@ export PATH="$(cd "$(dirname "$LOCK")" && pwd):$PATH"
 WORK="$(mktemp -d)"
 # The person's own Claude Code settings must not change what the scenarios expect.
 export CLAUDE_CONFIG_DIR="$WORK/.claude-config"
+export CODEX_HOME="$WORK/.codex-home"
 cd "$WORK" || exit 1
 sha() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi; }
 edit() { perl -pi -e "$1" "$2"; }
@@ -148,19 +149,54 @@ head=$(git rev-parse HEAD)
 agent "sh tools/commit.sh"
 check "agent commit of a locked change is stopped" '[ "$(git rev-parse HEAD)" = "$head" ] && grep -q "Sneaky." CHANGELOG.md'
 git reset -q
-edit 's/Sneaky\./By hand./' CHANGELOG.md
+# A locked change needs an approval to be committed, even one made by hand, because
+# a change that no hook saw could come from an agent without hooks.
+approve_region() { # path, id: records the change from HEAD to the working tree, as `lock approve` would
+  region() { sed -n "/LOCKED: $2 START/,/LOCKED: $2 END/p" | tr -d '\r'; }
+  from=$(printf '%s' "$(git show "HEAD:$1" | region "$1" "$2")" | sha | cut -c1-64)
+  to=$(printf '%s' "$(region "$1" "$2" < "$1")" | sha | cut -c1-64)
+  printf '{"version":1,"path":"%s","id":"%s","before":"%s","after":"%s"}\n' "$1" "$2" "$from" "$to" > ".locks/approvals/$2.$to.json"
+}
+edit 's/Sneaky./By hand./' CHANGELOG.md
+head=$(git rev-parse HEAD)
 git commit -qam "hand edit" 2>/dev/null
-check "hand edit is recorded at commit" '[ "$(git log -1 --format=%s)" = "hand edit" ] && git ls-files .locks/approvals | grep -q "^.locks/approvals/history"'
+check "unapproved hand edit is refused at commit" '[ "$(git rev-parse HEAD)" = "$head" ]'
+approve_region CHANGELOG.md history
+git add -A; git commit -qm "hand edit" 2>/dev/null
+check "approved hand edit commits" '[ "$(git log -1 --format=%s)" = "hand edit" ]'
 edit 's/By hand\./By hand again./' CHANGELOG.md
 agent "git commit -qam agent-commits-hand-edit"
-check "agent commit of a hand edit is recorded" '[ "$(git log -1 --format=%s)" = agent-commits-hand-edit ] && [ -z "$(git status --porcelain .locks)" ]'
+check "agent commit of an unapproved hand edit is refused" '[ "$(git log -1 --format=%s)" = "hand edit" ] && grep -q "By hand again." CHANGELOG.md'
+git checkout -q CHANGELOG.md
 hook PreToolUse "echo never-ran" >/dev/null
-edit 's/By hand again\./Later./' CHANGELOG.md
-git commit -qam "during a turn" 2>/dev/null
-check "commit waits while an agent command may be running" '[ "$(git log -1 --format=%s)" = agent-commits-hand-edit ]'
 printf '{"cwd":"%s","session_id":"s1","hook_event_name":"Stop"}' "$ROOT" | "$LOCK" hook claude >/dev/null
-git commit -qam "after the turn" 2>/dev/null
-check "turn end clears the copies" '[ "$(git log -1 --format=%s)" = "after the turn" ]'
+check "turn end clears the copies" '[ -z "$(ls "$(git rev-parse --git-dir)/lock/runs" 2>/dev/null)" ]'
+
+# Tools that lock cannot read, such as MCP tools, are checked by what they changed.
+tool() { printf '{"cwd":"%s","session_id":"s3","hook_event_name":"%s","tool_name":"mcp__files__write","tool_use_id":"m1","tool_input":{"note":"x"}}' "$ROOT" "$1" | "$LOCK" hook claude; }
+out="$(tool PreToolUse)"
+edit 's/tagline = "[^"]*"/tagline = "From MCP."/' src/app.ts
+out="$(tool PostToolUse)"
+check "an MCP tool's change to locked text is put back" '! grep -q "From MCP." src/app.ts && case "$out" in *"put it back"*) true;; *) false;; esac'
+
+# A command that runs in the background is checked when the turn ends.
+bg() { printf '{"cwd":"%s","session_id":"s4","hook_event_name":"%s","tool_name":"Bash","tool_input":{"command":"sh tools/cursor.sh","run_in_background":true}}' "$ROOT" "$1" | "$LOCK" hook claude; }
+bg PreToolUse >/dev/null
+out="$(bg PostToolUse)"
+edit 's/tagline = "[^"]*"/tagline = "Background."/' src/app.ts
+stop="$(printf '{"cwd":"%s","session_id":"s4","hook_event_name":"Stop"}' "$ROOT" | "$LOCK" hook claude 2>/dev/null)"
+check "a background command is checked when the turn ends" '[ -z "$out" ] && ! grep -q "Background." src/app.ts && case "$stop" in *systemMessage*"put it back"*) true;; *) false;; esac'
+
+# Settings that decide whether lock runs: agent settings at home, and core.hooksPath.
+mkdir -p "$CLAUDE_CONFIG_DIR"
+CFG="$(cd "$CLAUDE_CONFIG_DIR" && (pwd -W 2>/dev/null || pwd))"
+expect "agent cannot turn Claude Code hooks off in user settings" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"'"$CFG"'/settings.json","content":"{\u0022disableAllHooks\u0022: true}"}}')"
+mkdir -p "$CODEX_HOME"; CDX="$(cd "$CODEX_HOME" && (pwd -W 2>/dev/null || pwd))"
+expect "agent cannot turn Codex hooks off" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"'"$CDX"'/config.toml","content":"[features]\nhooks = false\n"}}')"
+expect "agent may change other Codex settings" allow "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"'"$CDX"'/config.toml","content":"model = 1\n"}}')"
+expect "agent cannot move the git hooks by editing .git/config" deny "$(j '{"cwd":"ROOT","tool_name":"Edit","tool_input":{"file_path":"ROOT/.git/config","old_string":"[core]","new_string":"[core]\n\thooksPath = /dev/null"}}')"
+agent "git config core.hooksPath /dev/null"
+check "a command that moves the git hooks is undone" '[ -z "$(git config --local --get core.hooksPath)" ] && case "$out" in *core.hooksPath*) true;; *) false;; esac'
 
 # Claude Code asks the person in its permission prompt, and lock records a yes after the edit.
 call() { printf '{"cwd":"%s","session_id":"s2","permission_mode":"%s","hook_event_name":"%s","tool_use_id":"%s","tool_name":"Edit","tool_input":{"file_path":"%s/src/app.ts","old_string":"%s","new_string":"%s"}}' "$ROOT" "$1" "$2" "$3" "$ROOT" "$4" "$5" | "$LOCK" hook "${6:-claude}"; }
@@ -205,6 +241,14 @@ sh tools/cursor.sh
 after="$(cursor afterShellExecution "sh tools/cursor.sh")"
 out="$(cursor postToolUse "sh tools/cursor.sh")"
 check "cursor: locked text from a command is put back and reported" '[ "$after" = "{}" ] && [ "$(grep tagline src/app.ts)" = "$tagline_before" ] && grep -q "free = 7" src/app.ts && case "$out" in *additional_context*"put it back"*) true;; *) false;; esac'
+
+# The lock hook entries may not change at all: Codex stops running a changed hook
+# until a person reviews it again.
+echo "perl -0pi -e 's/\"command\": \"/\"timeout\": 1, \"command\": \"/' .claude/settings.json" > tools/retime.sh
+agent "sh tools/retime.sh"
+check "a command that rewrites the lock hook entry is undone" '! grep -q "\"timeout\": 1" .claude/settings.json && case "$out" in *settings.json*) true;; *) false;; esac'
+printf '[hooks.state.x]\ntrusted_hash = "sha256:1"\n' > "$CODEX_HOME/config.toml"
+expect "agent cannot remove a Codex hook trust record" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"'"$CDX"'/config.toml","content":"[hooks.state.x]\n"}}')"
 
 # On a failure, show the agent settings, which several checks depend on.
 [ "$fail" -eq 0 ] || { echo "--- .claude/settings.json"; cat .claude/settings.json; }
