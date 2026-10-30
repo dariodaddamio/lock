@@ -366,16 +366,9 @@ and `.locks/` stay, so `lock install` brings the protection back.
 
 ## Contributing
 
-Bug reports, ideas, and pull requests are welcome. To build `lock`, run the
-scenario checks, and time the hooks:
-
-```sh
-cargo build --release
-LOCK="$PWD/target/release/lock" bash tests/scenarios.sh
-python3 tests/bench.py target/release/lock
-```
-
-To report a way around `lock`, see [SECURITY.md](SECURITY.md).
+Bug reports, ideas, and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md)
+explains how to build and check `lock`, and [SECURITY.md](SECURITY.md) explains
+how to report a way around it.
 
 ## License
 
