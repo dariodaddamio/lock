@@ -392,6 +392,12 @@ agent "sh tools/mixed.sh"
 check "a put-back keeps the file's other bytes and line endings" 'grep -q "\"keep\"" src/mixed.ts && [ "$(tail -c 6 src/mixed.ts | od -An -c | tr -d " ")" = "b=3\n" ] && [ "$(tr -cd "\r" < src/mixed.ts | wc -c | tr -d " ")" = 4 ]'
 git rm -qf src/mixed.ts && git commit -qm "remove mixed" --no-verify
 
+# A move of a locked file is undone in full: the file is back and git shows no
+# staged deletion of it.
+agent "git mv src/app.ts src/moved.ts"
+check "an agent's git mv of a locked file is undone and unstaged" '[ -f src/app.ts ] && [ -z "$(git status --porcelain -- src/app.ts)" ] && case "$out" in *"moved or deleted src/app.ts"*) true;; *) false;; esac'
+git rm -qf --cached src/moved.ts 2>/dev/null; rm -f src/moved.ts
+
 # On a failure, show the agent settings, which several checks depend on.
 [ "$fail" -eq 0 ] || { echo "--- .claude/settings.json"; cat .claude/settings.json; }
 echo "passed $pass, failed $fail"

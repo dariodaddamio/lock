@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img">
+<rect width="1200" height="560" rx="14" fill="#0d1117"/>
+<text x="40" y="56" fill="#e6edf3" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="24" font-weight="600" text-anchor="start">What lock does when a locked file is moved</text>
+<text x="40" y="86" fill="#8b949e" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="400" text-anchor="start">A move counts as removing the locked text from its old path.</text>
+<text x="40" y="132" fill="#8b949e" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" text-anchor="start">AN AGENT MOVES IT</text>
+<rect x="40" y="150" width="250" height="120" rx="12" fill="#161b22" stroke="#30363d"/>
+<text x="165.0" y="188" fill="#e6edf3" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" font-weight="600" text-anchor="middle">Agent runs</text>
+<text x="165.0" y="218" fill="#e6edf3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" font-weight="400" text-anchor="middle">git mv src/pricing.ts</text>
+<text x="165.0" y="242" fill="#e6edf3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" font-weight="400" text-anchor="middle">src/copy/pricing.ts</text>
+<line x1="290" y1="210.0" x2="328" y2="210.0" stroke="#8b949e" stroke-width="2"/>
+<path d="M326,204.0 L336,210.0 L326,216.0 Z" fill="#8b949e"/>
+<rect x="336" y="150" width="250" height="120" rx="12" fill="#79c0ff1f" stroke="#79c0ff"/>
+<text x="461.0" y="188" fill="#79c0ff" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" font-weight="600" text-anchor="middle">lock puts it back</text>
+<text x="461.0" y="218" fill="#8b949e" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="400" text-anchor="middle">src/pricing.ts is restored</text>
+<text x="461.0" y="242" fill="#8b949e" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="400" text-anchor="middle">and the move is unstaged</text>
+<line x1="586" y1="210.0" x2="624" y2="210.0" stroke="#8b949e" stroke-width="2"/>
+<path d="M622,204.0 L632,210.0 L622,216.0 Z" fill="#8b949e"/>
+<rect x="632" y="150" width="250" height="120" rx="12" fill="#161b22" stroke="#30363d"/>
+<text x="757.0" y="188" fill="#e6edf3" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" font-weight="600" text-anchor="middle">Agent is told</text>
+<text x="757.0" y="218" fill="#8b949e" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="400" text-anchor="middle">moving locked text</text>
+<text x="757.0" y="242" fill="#8b949e" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="400" text-anchor="middle">needs your approval</text>
+<line x1="882" y1="210.0" x2="920" y2="210.0" stroke="#8b949e" stroke-width="2"/>
+<path d="M918,204.0 L928,210.0 L918,216.0 Z" fill="#8b949e"/>
+<rect x="928" y="150" width="250" height="120" rx="12" fill="#ff7b721f" stroke="#ff7b72"/>
+<text x="1053.0" y="188" fill="#ff7b72" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" font-weight="600" text-anchor="middle">Nothing changed</text>
+<text x="1053.0" y="218" fill="#8b949e" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="400" text-anchor="middle">the commit is refused</text>
+<text x="1053.0" y="242" fill="#8b949e" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="400" text-anchor="middle">until you approve</text>
+<text x="40" y="342" fill="#8b949e" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" text-anchor="start">YOU MOVE IT</text>
+<rect x="40" y="360" width="250" height="120" rx="12" fill="#161b22" stroke="#30363d"/>
+<text x="165.0" y="398" fill="#e6edf3" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" font-weight="600" text-anchor="middle">You run</text>
+<text x="165.0" y="428" fill="#e6edf3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" font-weight="400" text-anchor="middle">git mv</text>
+<text x="165.0" y="452" fill="#e6edf3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" font-weight="400" text-anchor="middle">then git commit</text>
+<line x1="290" y1="420.0" x2="328" y2="420.0" stroke="#8b949e" stroke-width="2"/>
+<path d="M326,414.0 L336,420.0 L326,426.0 Z" fill="#8b949e"/>
+<rect x="336" y="360" width="250" height="120" rx="12" fill="#ff7b721f" stroke="#ff7b72"/>
+<text x="461.0" y="398" fill="#ff7b72" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" font-weight="600" text-anchor="middle">Commit refused</text>
+<text x="461.0" y="428" fill="#8b949e" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="400" text-anchor="middle">pricing-copy was removed</text>
+<text x="461.0" y="452" fill="#8b949e" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="400" text-anchor="middle">without approval</text>
+<line x1="586" y1="420.0" x2="624" y2="420.0" stroke="#8b949e" stroke-width="2"/>
+<path d="M622,414.0 L632,420.0 L622,426.0 Z" fill="#8b949e"/>
+<rect x="632" y="360" width="250" height="120" rx="12" fill="#161b22" stroke="#30363d"/>
+<text x="757.0" y="398" fill="#e6edf3" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" font-weight="600" text-anchor="middle">You approve</text>
+<text x="757.0" y="428" fill="#e6edf3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="15" font-weight="400" text-anchor="middle">lock approve pricing-copy</text>
+<text x="757.0" y="452" fill="#8b949e" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="400" text-anchor="middle">and review the diff</text>
+<line x1="882" y1="420.0" x2="920" y2="420.0" stroke="#8b949e" stroke-width="2"/>
+<path d="M918,414.0 L928,420.0 L918,426.0 Z" fill="#8b949e"/>
+<rect x="928" y="360" width="250" height="120" rx="12" fill="#56d3641f" stroke="#56d364"/>
+<text x="1053.0" y="398" fill="#56d364" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="18" font-weight="600" text-anchor="middle">Commit goes through</text>
+<text x="1053.0" y="428" fill="#8b949e" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="400" text-anchor="middle">the lock now lives at</text>
+<text x="1053.0" y="452" fill="#8b949e" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" font-weight="400" text-anchor="middle">src/copy/pricing.ts</text>
+</svg>

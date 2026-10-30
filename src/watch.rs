@@ -610,6 +610,8 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
     // Whole-file locks, as the configuration listed them before the command.
     let whole: Vec<String> =
         parse_file_locks(snapshot.read(FILE_LOCKS)?.flatten().as_deref()).unwrap_or_default();
+    // Locked files that the command moved or deleted, which lock brings back.
+    let mut brought_back: Vec<String> = Vec::new();
     for path in &whole {
         let Some(before) = snapshot.read(path)? else {
             continue;
@@ -620,6 +622,9 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
             continue;
         }
         put(root, path, before.as_deref())?;
+        if now.is_none() && before.is_some() {
+            brought_back.push(path.clone());
+        }
         pending::save(
             root,
             path,
@@ -690,6 +695,9 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
         // changes, its own bytes, and its line endings.
         if whole_file && put_back.iter().any(|(done, _)| done == path) {
             put(root, path, Some(&before))?;
+            if now.is_none() {
+                brought_back.push(path.clone());
+            }
         } else if !spliced.is_empty() {
             let ids: Vec<&str> = spliced.iter().map(String::as_str).collect();
             match now
@@ -700,6 +708,15 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
                 None => put(root, path, Some(&before))?,
             }
         }
+    }
+
+    // A move such as git mv also stages the deletion of the old path. With the file
+    // back on disk, its index entry goes back to HEAD too, so git status shows no
+    // staged move. A copy that the command made at a new path stays.
+    if !brought_back.is_empty() {
+        let mut args = vec!["reset", "-q", "--"];
+        args.extend(brought_back.iter().map(String::as_str));
+        let _ = git(root, &args);
     }
 
     if undone.is_empty() && put_back.is_empty() {
@@ -725,6 +742,12 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
         lines.push(format!(
             "lock: this command changed {}, which only a person may change, so lock put it back.",
             undone.join(", ")
+        ));
+    }
+    if !brought_back.is_empty() {
+        lines.push(format!(
+            "lock: the command moved or deleted {}, so lock put it back and unstaged the move. Moving or deleting locked text needs the user's approval. A copy the command made at a new path is still there.",
+            brought_back.join(", ")
         ));
     }
     if let Some(note) = head_note {

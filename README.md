@@ -102,6 +102,7 @@ of four things:
 | Change locked text yourself | Edit it, run `lock approve` in your terminal, and commit | The approval goes into the same commit. A commit of locked text without an approval is refused. |
 | Let the agent change locked text | Ask for the change, and approve it when `lock` asks | Only the exact change that you approved goes through. |
 | Remove a lock | Delete the markers and approve that, or approve the agent's edit that deletes them | The lock is gone after the commit. |
+| Move or rename locked text | Move it, run `lock approve`, and commit | Moving counts as removing the locked text from the old path. Afterwards the lock lives at the new path. An agent's move is refused or undone. |
 
 ## Approve a change
 
@@ -308,7 +309,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dariodaddamio/lock@v0.3.0
+      - uses: dariodaddamio/lock@v0.3.1
 ```
 
 Second, make sure that a person reviews each approval before it reaches the main
@@ -378,6 +379,28 @@ Claude Code settings or plugins, and agents cannot add one.
 | Read-only file permissions | They protect whole files only, and an agent can change the permissions back. |
 | Code owner review | It finds the change in review, after the agent has made it. |
 | `lock` | It stops the change at the tool call, for any part of a file, and checks again at commit and in CI. |
+
+### How do I change locked text myself?
+
+Edit it as usual. Before you commit, run `lock approve` in your terminal: it shows
+your change as a diff and records it. Then commit the approval file with your
+change. Until you do, the commit hook that `lock install` adds refuses the commit.
+
+### What happens when locked text is moved or renamed?
+
+A move counts as removing the locked text from its old path.
+
+![When an agent moves a locked file, lock puts it back and the commit is refused; when you move it, you approve once and the lock lives at the new path](docs/move.svg)
+
+| Who moves it | What happens |
+| --- | --- |
+| An agent, with an edit tool or a patch | The tool call is refused, and nothing changes. |
+| An agent, with a shell command such as `git mv` | `lock` puts the file back at its old path, unstages the move, and tells the agent. A copy that the command made at the new path stays. |
+| An agent, with a commit, even with `--no-verify` | The commit is refused or undone. |
+| You | `git commit` asks you to run `lock approve` once. After that commit, the lock lives at the new path. |
+
+Copying locked text to a new place needs no approval, because a new lock only adds
+protection.
 
 ### What if the agent commits my edit?
 
