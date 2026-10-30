@@ -80,10 +80,6 @@ impl View {
         })
     }
 
-    pub fn marked_or_empty(&self, root: &Path) -> Vec<String> {
-        self.marked(root).unwrap_or_default()
-    }
-
     fn files(&self, root: &Path, dir: &str) -> Result<Vec<String>, String> {
         let output = match self {
             View::Worktree => git(

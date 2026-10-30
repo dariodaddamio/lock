@@ -100,8 +100,8 @@ fn is_pre_commit(path: &str) -> bool {
 }
 
 /// Every file whose change lock must check after a command.
-fn watched(root: &Path, pre_commit: &str) -> Vec<String> {
-    let mut paths = View::Worktree.marked_or_empty(root);
+fn watched(root: &Path, pre_commit: &str) -> Result<Vec<String>, String> {
+    let mut paths = View::Worktree.marked(root)?;
     paths.extend(
         parse_file_locks(fs::read(root.join(FILE_LOCKS)).ok().as_deref()).unwrap_or_default(),
     );
@@ -110,7 +110,7 @@ fn watched(root: &Path, pre_commit: &str) -> Vec<String> {
     paths.push(pre_commit.to_string());
     paths.sort();
     paths.dedup();
-    paths
+    Ok(paths)
 }
 
 /// Copies the watched files before an agent command runs.
@@ -122,7 +122,7 @@ pub fn before(root: &Path, session: &str, command: &str, background: bool) -> Re
     fs::create_dir_all(&dir).map_err(|error| format!("could not copy locked files: {error}"))?;
     let (pre_commit, head) = hooks_and_head(root);
     let mut files = Map::new();
-    for (index, path) in watched(root, &pre_commit).into_iter().enumerate() {
+    for (index, path) in watched(root, &pre_commit)?.into_iter().enumerate() {
         let entry = match fs::read(root.join(&path)) {
             Ok(bytes) => {
                 let name = index.to_string();

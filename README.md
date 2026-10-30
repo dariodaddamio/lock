@@ -309,7 +309,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dariodaddamio/lock@v0.3.1
+      - uses: dariodaddamio/lock@v0.3.2
 ```
 
 Second, make sure that a person reviews each approval before it reaches the main
