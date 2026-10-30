@@ -16,14 +16,13 @@ use crate::install::ensure_git_hook;
 use crate::pending;
 use crate::regions::{decode, hash, regions, splice, supports_markers};
 use crate::repo::{
-    FILE_LOCKS, View, WHOLE_FILE, approved, disk_approvals, git, git_dir, git_text,
-    parse_file_locks, violations,
+    FILE_LOCKS, View, WHOLE_FILE, approved, disk_approvals, epoch_seconds, git, git_dir, git_text,
+    lock_state, parse_file_locks, violations,
 };
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A copy older than this belongs to a command that never reported back.
 const STALE_SECONDS: u64 = 6 * 60 * 60;
@@ -55,13 +54,6 @@ fn file_mode(path: &Path) -> Option<u32> {
 #[cfg(not(unix))]
 fn file_mode(_path: &Path) -> Option<u32> {
     None
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 fn key(session: &str, command: &str) -> String {
@@ -152,7 +144,7 @@ pub fn before(root: &Path, session: &str, command: &str, background: bool) -> Re
     let (local, global) = guard::hooks_paths(root);
     let manifest = json!({
         "session": session,
-        "started": now(),
+        "started": epoch_seconds(),
         "head": head,
         "preCommit": pre_commit,
         "files": files,
@@ -210,7 +202,7 @@ impl Snapshot {
 
     fn fresh(&self) -> bool {
         let started = self.manifest.get("started").and_then(Value::as_u64);
-        started.is_some_and(|at| now().saturating_sub(at) < STALE_SECONDS)
+        started.is_some_and(|at| epoch_seconds().saturating_sub(at) < STALE_SECONDS)
     }
 }
 
@@ -344,14 +336,7 @@ impl Judge<'_> {
             .entry(path.to_string())
             .or_insert_with(|| git(root, &["show", &format!("HEAD:{path}")]).ok())
             .clone()?;
-        if id == WHOLE_FILE {
-            return Some(hash(&bytes));
-        }
-        regions(path, &decode(&bytes).0)
-            .ok()?
-            .into_iter()
-            .find(|region| region.id == id)
-            .map(|region| region.hash)
+        lock_state(path, id, &bytes)
     }
 
     fn allows(&mut self, path: &str, id: &str, from: Option<&str>, to: Option<&str>) -> bool {
@@ -573,7 +558,7 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
 
     let mut judge = Judge {
         root,
-        records: disk_approvals(root)?,
+        records: disk_approvals(root, None)?,
         head_ok: None,
         old_head: snapshot.field("head").map(str::to_string),
         head_files: HashMap::new(),

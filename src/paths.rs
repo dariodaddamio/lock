@@ -20,7 +20,7 @@ fn windows_drive(path: &str, root: &str) -> String {
     path.to_string()
 }
 
-fn normalize(path: &str) -> String {
+pub(crate) fn normalize(path: &str) -> String {
     let mut parts: Vec<&str> = Vec::new();
     for part in path.split('/') {
         match part {

@@ -145,7 +145,7 @@ fn hook_run(host: hook::Host) -> Result<i32, String> {
         Err(_) => {
             println!(
                 "{}",
-                hook::deny(host, "lock panicked while checking this tool call")
+                hook::format_message(host, "deny", "lock panicked while checking this tool call")
             );
             Ok(2)
         }

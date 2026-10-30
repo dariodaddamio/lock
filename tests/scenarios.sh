@@ -462,6 +462,8 @@ agent "sh tools/head-read-packed.sh"
 check "packed HEAD is read without git" '[ -z "$out" ]'
 rm -f tools/head-read.sh tools/head-read-packed.sh
 
+expect "a delete tool is refused up front on a locked file" deny "$(j '{"cwd":"ROOT","tool_name":"Delete","tool_input":{"file_path":"ROOT/CHANGELOG.md"}}')"
+
 # On a failure, show the agent settings, which several checks depend on.
 [ "$fail" -eq 0 ] || { echo "--- .claude/settings.json"; cat .claude/settings.json; }
 echo "passed $pass, failed $fail"
