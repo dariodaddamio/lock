@@ -4,10 +4,10 @@
 
 - `lock approve` has a clearer screen. Each change starts with a header that names
   the file, the kind of lock, where the change came from, and how many lines it
-  touches. You type `approve` (capitals do not matter) or press Enter to skip, and
-  you never type the lock's id. Type `all` to approve this change and the ones after
-  it, after a second confirmation that names the count, or `q` to quit. Any other
-  answer is explained and asked again instead of being skipped. The screen ends with
+  touches. You answer one question with `y` (or `yes` or `approve`, in any case), `n` or
+  Enter to skip, `a` to approve this change and the ones after it after a second
+  question that lists them and names the count, or `q` to quit. You never type the
+  lock's id. Any other answer is explained and asked again instead of being skipped. The screen ends with
   how many changes you approved and skipped, and which approval files to commit.
   `lock approve` still runs only for a person at a terminal, and each approval
   still names the exact change.

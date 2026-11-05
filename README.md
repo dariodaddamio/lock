@@ -133,18 +133,18 @@ before it runs, and your own edits need an approval too, so for these you run
 text, it shows a header with the file, the kind of lock, where the change came from,
 and the number of lines that changed, followed by the diff:
 
-![lock approve shows the change, a short header, and the diff of the locked region; you type approve, and the approval is recorded](docs/approve.svg)
+![lock approve shows the change, a short header, and the diff of the locked region; you press y, and the approval is recorded](docs/approve.svg)
 
-At each change, type one of these words and press Enter:
+After each diff, `lock approve` asks one question. Press a key and then Enter:
 
-| You type | What happens |
+| You press | What happens |
 | --- | --- |
-| `approve` | Records this exact change. Capitals do not matter, and you never type the lock's id. |
-| Enter | Skips this change. |
-| `all` | Approves this change and every change after it. `lock approve` lists them and asks you to type `approve` and the number, so a stray `all` approves nothing. |
+| `y` | Records this exact change. `yes` and `approve` work too, in any case, and you never type the lock's id. |
+| `n` or Enter | Skips this change. |
+| `a` | Offers to approve this change and every change after it. `lock approve` lists them and asks `Approve all N remaining changes? [y/n]` before it records anything. |
 | `q` | Stops and skips the rest. |
 
-Any other text is not an approval. `lock approve` says what it expects and asks again.
+Any other key is not an approval. `lock approve` says which keys are valid and asks again.
 At the end, it prints how many changes you approved and skipped, and which approval
 files to commit.
 

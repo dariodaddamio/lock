@@ -235,7 +235,7 @@ pub fn require_person(command: &str) -> Result<(), String> {
 /// What a person typed at the prompt. The lock's id is never part of an answer.
 #[derive(Debug, PartialEq)]
 enum Answer {
-    Approve,
+    Yes,
     All,
     Skip,
     Quit,
@@ -244,18 +244,17 @@ enum Answer {
 
 fn parse_answer(typed: &str) -> Answer {
     match typed.trim().to_ascii_lowercase().as_str() {
-        "approve" => Answer::Approve,
-        "all" => Answer::All,
-        "" => Answer::Skip,
+        "y" | "yes" | "approve" => Answer::Yes,
+        "a" | "all" => Answer::All,
+        "n" | "no" | "skip" | "" => Answer::Skip,
         "q" | "quit" => Answer::Quit,
         _ => Answer::Unknown,
     }
 }
 
-/// The second confirmation for `all` names how many changes it covers, so a stray
-/// `all` cannot approve anything.
-fn confirms_all(typed: &str, count: usize) -> bool {
-    typed.trim().to_ascii_lowercase() == format!("approve {count}")
+/// The second question for `a` lists every change it covers and needs a yes.
+fn confirms_all(typed: &str) -> bool {
+    matches!(typed.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 /// The header above one change: which change, where, what kind of lock, where it came
@@ -342,31 +341,34 @@ fn review(
         writeln!(out, "\n{shown}{RULE}").map_err(|error| error.to_string())?;
         write!(out, "{}", diff.shown).map_err(|error| error.to_string())?;
         writeln!(out, "{RULE}").map_err(|error| error.to_string())?;
-        let prompt = if remaining > 0 {
-            "Type approve to approve, Enter to skip, all to approve the rest, or q to quit: "
-                .to_string()
+        let line = if remaining > 0 {
+            "Approve this change?  [y] yes   [n] skip   [a] approve all remaining   [q] quit
+> "
         } else {
-            "Type approve to approve, Enter to skip, or q to quit: ".to_string()
+            "Approve this change?  [y] yes   [n] skip   [q] quit
+> "
         };
-        let mut prompt = prompt.as_str();
         let again = if remaining > 0 {
-            "Not approved. Type approve, all, or press Enter to skip. Type q to quit: "
+            "Not valid. Press y, n, a, or q, then Enter.
+"
         } else {
-            "Not approved. Type approve or press Enter to skip. Type q to quit: "
+            "Not valid. Press y, n, or q, then Enter.
+"
         };
+        let mut prompt = line.to_string();
         let answer = loop {
-            let Some(typed) = ask(input, out, prompt)? else {
+            let Some(typed) = ask(input, out, &prompt)? else {
                 writeln!(out, "\nInput ended.").map_err(|error| error.to_string())?;
                 break Answer::Quit;
             };
             match parse_answer(&typed) {
-                Answer::All if remaining == 0 => prompt = again,
-                Answer::Unknown => prompt = again,
+                Answer::All if remaining == 0 => prompt = format!("{again}{line}"),
+                Answer::Unknown => prompt = format!("{again}{line}"),
                 known => break known,
             }
         };
         match answer {
-            Answer::Approve => {
+            Answer::Yes => {
                 let file = ui.approve(change)?;
                 writeln!(out, "Approved. Recorded {file}.").map_err(|error| error.to_string())?;
                 summary.approved += 1;
@@ -391,10 +393,9 @@ fn review(
                     writeln!(out, "  and {} more", count - LISTED)
                         .map_err(|error| error.to_string())?;
                 }
-                let confirm =
-                    format!("Type approve {count} to confirm, or press Enter to go back: ");
+                let confirm = format!("Approve all {count} remaining changes? [y/n]: ");
                 let typed = ask(input, out, &confirm)?;
-                if !typed.is_some_and(|typed| confirms_all(&typed, count)) {
+                if !typed.is_some_and(|typed| confirms_all(&typed)) {
                     writeln!(out, "Cancelled. Nothing was approved by all.")
                         .map_err(|error| error.to_string())?;
                     continue;

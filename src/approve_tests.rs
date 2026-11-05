@@ -60,41 +60,58 @@ fn three() -> Vec<Candidate> {
 
 #[test]
 fn answers_parse_without_regard_to_case_or_spaces() {
-    assert_eq!(parse_answer("approve"), Answer::Approve);
-    assert_eq!(parse_answer("  APPROVE \r\n"), Answer::Approve);
-    assert_eq!(parse_answer("Approve"), Answer::Approve);
-    assert_eq!(parse_answer("all"), Answer::All);
-    assert_eq!(parse_answer("ALL"), Answer::All);
-    assert_eq!(parse_answer(""), Answer::Skip);
-    assert_eq!(parse_answer("\n"), Answer::Skip);
+    for yes in [
+        "y",
+        "Y",
+        "yes",
+        "YES",
+        "approve",
+        "  APPROVE 
+",
+        "Approve",
+    ] {
+        assert_eq!(parse_answer(yes), Answer::Yes, "{yes:?}");
+    }
+    for skip in [
+        "n", "N", "no", "", "
+",
+    ] {
+        assert_eq!(parse_answer(skip), Answer::Skip, "{skip:?}");
+    }
+    assert_eq!(parse_answer("a"), Answer::All);
+    assert_eq!(parse_answer("A"), Answer::All);
     assert_eq!(parse_answer("q"), Answer::Quit);
     assert_eq!(parse_answer("Q"), Answer::Quit);
-    assert_eq!(parse_answer("quit"), Answer::Quit);
 }
 
 #[test]
 fn the_id_is_never_part_of_the_answer() {
     assert_eq!(parse_answer("APPROVE file"), Answer::Unknown);
     assert_eq!(parse_answer("approve pricing-copy"), Answer::Unknown);
-    assert_eq!(parse_answer("y"), Answer::Unknown);
-    assert_eq!(parse_answer("yes"), Answer::Unknown);
+    assert_eq!(parse_answer("maybe"), Answer::Unknown);
+    assert_eq!(parse_answer("1"), Answer::Unknown);
 }
 
 #[test]
-fn approve_all_needs_the_count() {
-    assert!(confirms_all("approve 3", 3));
-    assert!(confirms_all(" APPROVE 3 ", 3));
-    assert!(!confirms_all("approve", 3));
-    assert!(!confirms_all("approve 2", 3));
-    assert!(!confirms_all("", 3));
-    assert!(!confirms_all("all", 3));
+fn approve_all_needs_a_yes() {
+    assert!(confirms_all("y"));
+    assert!(confirms_all(" YES "));
+    assert!(!confirms_all(""));
+    assert!(!confirms_all("n"));
+    assert!(!confirms_all("a"));
 }
 
 #[test]
 fn a_wrong_answer_says_what_to_type_and_asks_again() {
     let items = [item("a.ts", "x", false, Some("h"))];
-    let (summary, out, saved) = go(&items, "APPROVE file\nmaybe\napprove\n");
-    assert_eq!(out.matches("Not approved. Type approve").count(), 2);
+    let (summary, out, saved) = go(
+        &items,
+        "APPROVE file
+maybe
+APPROVE
+",
+    );
+    assert_eq!(out.matches("Not valid.").count(), 2);
     assert_eq!(saved, ["a.ts"]);
     assert_eq!((summary.approved, summary.skipped), (1, 0));
 }
@@ -104,17 +121,23 @@ fn the_last_change_does_not_offer_all() {
     let items = [item("a.ts", "x", false, Some("h"))];
     let (_, out, _) = go(&items, "wat\n\n");
     assert!(
-        out.contains("Not approved. Type approve or press Enter to skip."),
+        out.contains("Not valid. Press y, n, or q, then Enter."),
         "{out}"
     );
-    assert!(!out.contains("all"), "{out}");
+    assert!(!out.contains("[a]"), "{out}");
 }
 
 #[test]
 fn a_wrong_answer_mentions_all_while_changes_remain() {
     let (_, out, _) = go(&three(), "wat\n\nq\n");
     assert!(
-        out.contains("Not approved. Type approve, all, or press Enter to skip."),
+        out.contains("Not valid. Press y, n, a, or q, then Enter."),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "Approve this change?  [y] yes   [n] skip   [a] approve all remaining   [q] quit"
+        ),
         "{out}"
     );
 }
@@ -152,8 +175,19 @@ fn closed_input_stops_instead_of_looping() {
 
 #[test]
 fn all_lists_the_count_and_needs_a_second_confirmation() {
-    let (summary, out, saved) = go(&three(), "all\napprove 3\n");
-    assert!(out.contains("approve 3"), "{out}");
+    let (summary, out, saved) = go(
+        &three(),
+        "a
+y
+",
+    );
+    assert!(
+        out.contains("Approve all 3 remaining changes? [y/n]"),
+        "{out}"
+    );
+    for file in ["a.ts", "b.ts", "c.ts"] {
+        assert!(out.contains(&format!("  {file} (")), "{out}");
+    }
     assert_eq!(saved, ["a.ts", "b.ts", "c.ts"]);
     assert!(out.contains("Approved 3, skipped 0."), "{out}");
     assert_eq!(summary.approved, 3);
@@ -167,13 +201,19 @@ fn declining_the_confirmation_goes_back_to_this_change() {
     ];
     let (summary, out, saved) = go(&items, "all\n\n\nq\n");
     assert!(saved.is_empty());
-    assert!(out.contains("Nothing was approved by all."), "{out}");
+    assert!(out.contains("Cancelled."), "{out}");
     assert_eq!((summary.approved, summary.skipped), (0, 2));
 }
 
 #[test]
 fn all_counts_only_the_changes_from_here_on() {
-    let (summary, _, saved) = go(&three(), "\nall\napprove 2\n");
+    let (summary, _, saved) = go(
+        &three(),
+        "
+a
+y
+",
+    );
     assert_eq!(saved, ["b.ts", "c.ts"]);
     assert_eq!((summary.approved, summary.skipped), (2, 1));
 }
