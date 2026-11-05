@@ -179,7 +179,7 @@ fn command_text(value: &Value) -> Option<String> {
     }
 }
 
-fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
+pub(crate) fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
     // Cursor sends an empty `cwd` with shell commands, so an empty one means none.
     let cwd = text(payload, &["cwd"])
         .filter(|cwd| !cwd.is_empty())

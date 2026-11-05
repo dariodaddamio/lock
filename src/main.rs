@@ -10,9 +10,11 @@
 //!   lock install [--git] [--claude] [--codex] [--cursor]
 //!                                             register the hooks in this clone
 //!   lock uninstall                            remove them (terminal only)
+//!   lock doctor                               check that the guard works (read-only)
 
 mod approve;
 mod ask;
+mod doctor;
 mod guard;
 mod head;
 mod hook;
@@ -40,6 +42,7 @@ Commands:
   list          Show each lock in the working tree
   check [--staged | --base <ref>]
                 Compare the locks with HEAD, the staged changes, or a base branch
+  doctor        Check that lock guards this clone, and say how to fix what it does not
   uninstall     Remove the hooks that lock install added
   hook claude|codex|cursor
                 The agent hook, which the agent runs with one tool call on stdin
@@ -125,6 +128,7 @@ fn run(args: &[String]) -> Result<i32, String> {
             }
             Ok(0)
         }
+        Some("doctor") => doctor::run(),
         Some("install") => install::run(rest),
         Some("uninstall") => install::uninstall(),
         Some("--version" | "-V") => {

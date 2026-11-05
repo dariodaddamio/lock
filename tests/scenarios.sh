@@ -119,7 +119,8 @@ echo y | "$LOCK" uninstall 2>/dev/null && { fail=$((fail+1)); echo "FAIL uninsta
 check() { if eval "$2"; then pass=$((pass+1)); echo "ok   $1"; else fail=$((fail+1)); echo "FAIL $1 $out"; fi; }
 hook() { printf '{"cwd":"%s","session_id":"s1","hook_event_name":"%s","tool_name":"Bash","tool_input":{"command":"%s"}}' "$ROOT" "$1" "$2" | "$LOCK" hook claude; }
 agent() { out="$(hook PreToolUse "$1")"; [ -z "$out" ] || return 1; sh -c "$1" >/dev/null 2>&1; out="$(hook PostToolUse "$1")"; }
-"$LOCK" install --claude >/dev/null; git add -A; git commit -qm hooks
+"$LOCK" install >/dev/null; git add -A; git commit -qm hooks
+"$LOCK" doctor >/dev/null 2>&1 && { pass=$((pass+1)); echo "ok   doctor passes after install"; } || { fail=$((fail+1)); echo "FAIL doctor passes after install"; }
 mkdir -p tools
 cat > tools/rewrite.sh <<'EOF'
 perl -pi -e 's/"Ship\."/"Ship again."/; s/free = 1/free = 5/' src/app.ts
