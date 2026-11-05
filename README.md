@@ -52,6 +52,11 @@ server, which `codex app-server daemon restart` restarts. Codex also stops runni
 a hook that changed until you review it again, so after `lock install` updates the
 hooks, open `/hooks` in Codex and trust them.
 
+`lock install` ends with these steps for your agents. Run `lock doctor` afterwards to
+check them: it prints a PASS, WARN, or FAIL line for each part of the setup and says how
+to fix it. If the hook files are in `.gitignore`, `lock install` and `lock doctor`
+warn you, because teammates do not get files that git ignores.
+
 ## At a glance
 
 | | |
@@ -124,10 +129,24 @@ and you approve it in your terminal.
 
 Codex and Cursor cannot ask you from a hook, a shell command cannot be checked
 before it runs, and your own edits need an approval too, so for these you run
-`lock approve` in your own terminal. It shows each blocked or uncommitted change to
-locked text as a diff and records the ones that you accept:
+`lock approve` in your own terminal. For each blocked or uncommitted change to locked
+text, it shows a header with the file, the kind of lock, where the change came from,
+and the number of lines that changed, followed by the diff:
 
-![lock approve shows the diff of the locked region, the person types APPROVE, and the approval is recorded](docs/approve.svg)
+![lock approve shows the change, a short header, and the diff of the locked region; you type approve, and the approval is recorded](docs/approve.svg)
+
+At each change, type one of these words and press Enter:
+
+| You type | What happens |
+| --- | --- |
+| `approve` | Records this exact change. Capitals do not matter, and you never type the lock's id. |
+| Enter | Skips this change. |
+| `all` | Approves this change and every change after it. `lock approve` lists them and asks you to type `approve` and the number, so a stray `all` approves nothing. |
+| `q` | Stops and skips the rest. |
+
+Any other text is not an approval. `lock approve` says what it expects and asks again.
+At the end, it prints how many changes you approved and skipped, and which approval
+files to commit.
 
 Then tell the agent to retry, and commit the new file in `.locks/approvals/` with
 the change. `lock approve` runs only when a person types into the terminal, so
@@ -341,6 +360,7 @@ review from Code Owners**, and add these lines to `.github/CODEOWNERS`:
 | `lock install [--git] [--claude] [--codex] [--cursor]` | Adds the hooks to this clone. With no options, it adds all of them. |
 | `lock approve [<id> or <path>...] [--reason <text>]` | Shows each blocked or unrecorded change and records the ones that you accept. |
 | `lock list` | Shows each lock in the working tree. |
+| `lock doctor` | Checks that `lock` guards this clone, and prints a PASS, WARN, or FAIL line with a fix for each check. It only reads, and it exits with a non-zero code when a check fails. |
 | `lock check` | Compares the working tree with `HEAD`. |
 | `lock check --staged` | Checks the staged changes, and fails for a locked change without an approval. The commit hook runs this. |
 | `lock check --base <ref>` | Compares `HEAD` with the point where it branched from `<ref>`. CI runs this. |
@@ -421,6 +441,22 @@ the agent's commit goes through, with your approval in it.
 
 Yes, if the agent can run a hook before and after each tool call. [Open an issue](https://github.com/dariodaddamio/lock/issues/new?template=agent.yml)
 with an example of the JSON that the agent sends to its hooks.
+
+### Why was my agent able to edit a locked file?
+
+Run `lock doctor`. It checks the setup and edits nothing. The usual causes are these:
+
+- The agent was already running when you ran `lock install`. A session that started
+  before the install runs no hooks, so restart the agent. Only the commit check
+  stops its edits until then.
+- The agent cannot find `lock` on its PATH. Start the agent from a shell where
+  `lock --version` works.
+- The agent does not trust the folder or the hooks yet. Accept the folder trust
+  prompt in Claude Code, review the hooks with `/hooks` in Codex, and reopen the
+  project in Cursor.
+- The hook files are git-ignored, so this clone has them but a teammate's or a CI
+  checkout does not. Add `!.claude/` and `!.claude/settings.json` to `.gitignore`,
+  and the same for the other agents, then commit the files.
 
 ### How do I remove lock?
 

@@ -6,6 +6,7 @@ use crate::repo::git_dir;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Debug)]
 pub struct Pending {
@@ -16,6 +17,14 @@ pub struct Pending {
     pub after: Option<String>,
     pub before_text: String,
     pub after_text: String,
+}
+
+/// While set, `save` writes nothing. `lock doctor` replays an edit to see whether it is
+/// refused, and that must not leave a proposal behind.
+static DRY_RUN: AtomicBool = AtomicBool::new(false);
+
+pub fn dry_run(on: bool) {
+    DRY_RUN.store(on, Ordering::SeqCst);
 }
 
 fn dir(root: &Path) -> PathBuf {
@@ -34,6 +43,9 @@ pub fn save(
     before: (Option<String>, &str),
     after: (Option<String>, &str),
 ) {
+    if DRY_RUN.load(Ordering::SeqCst) {
+        return;
+    }
     let key = key(path, id, after.0.as_deref());
     let dir = dir(root);
     let record = json!({

@@ -12,6 +12,7 @@ You need Rust 1.88 or later, git, and bash. On Windows, Git Bash works.
 cargo build --release
 cargo fmt --check
 cargo clippy --release -- -D warnings
+cargo test
 LOCK="$PWD/target/release/lock" bash tests/scenarios.sh
 ```
 

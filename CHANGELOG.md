@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- `lock approve` has a clearer screen. Each change starts with a header that names
+  the file, the kind of lock, where the change came from, and how many lines it
+  touches. You type `approve` (capitals do not matter) or press Enter to skip, and
+  you never type the lock's id. Type `all` to approve this change and the ones after
+  it, after a second confirmation that names the count, or `q` to quit. Any other
+  answer is explained and asked again instead of being skipped. The screen ends with
+  how many changes you approved and skipped, and which approval files to commit.
+  `lock approve` still runs only for a person at a terminal, and each approval
+  still names the exact change.
+- `lock approve` respects `NO_COLOR` and `TERM=dumb`.
+- `lock install` ends with next steps: restart any agent that was already running,
+  because its edits are not guarded until then, trust the hooks in each agent, check
+  that `lock` is on the PATH, and run `lock doctor`.
+- `lock install` warns when git ignores a hook file, because teammates and CI do not
+  get ignored files, and says which `.gitignore` lines share them.
+- New command `lock doctor` checks the setup without changing anything: `lock` on the
+  PATH, the commit hook, each agent's hook entries, ignored hook files, `.locks`, the
+  lock markers, and a canary that replays an edit to a locked file and reports
+  whether the hook would deny it. It exits with a non-zero code when a check fails.
+
 ## 0.3.2 - October 30, 2026
 
 - An edit to a locked file is as fast as in 0.2 again. Since 0.3.0 it started two

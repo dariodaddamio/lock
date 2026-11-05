@@ -18,6 +18,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: cargo fmt --check
       - run: cargo clippy --release --locked -- -D warnings
+      - run: cargo test --locked
       - run: cargo build --release --locked
       - name: Scenarios
         shell: bash

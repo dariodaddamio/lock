@@ -272,7 +272,7 @@ pub fn parse_file_locks(bytes: Option<&[u8]>) -> Result<Vec<String>, String> {
         .collect()
 }
 
-type Locks = BTreeMap<(String, String), Entry>;
+pub(crate) type Locks = BTreeMap<(String, String), Entry>;
 
 /// Every lock in a view, keyed by path and id.
 pub fn inventory(root: &Path, view: &View) -> Result<Locks, String> {

@@ -5,7 +5,15 @@
 use crate::repo::git_text;
 use serde_json::{Map, Value, json};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// The hook files that `lock install` writes for each agent, as the agent's name and
+/// the path from the repository root.
+pub(crate) const AGENT_FILES: [(&str, &str); 3] = [
+    ("Claude Code", ".claude/settings.json"),
+    ("Codex", ".codex/hooks.json"),
+    ("Cursor", ".cursor/hooks.json"),
+];
 
 const HOME: &str = "https://github.com/dariodaddamio/lock";
 
@@ -51,7 +59,7 @@ fn object(value: &mut Value) -> Result<&mut Map<String, Value>, String> {
         .ok_or_else(|| "expected a JSON object".to_string())
 }
 
-fn mentions_lock(entries: &Value) -> bool {
+pub(crate) fn mentions_lock(entries: &Value) -> bool {
     entries.to_string().contains("lock hook")
 }
 
@@ -181,16 +189,26 @@ fn shown(root: &Path, path: &Path) -> String {
         .map_or(text.clone(), str::to_string)
 }
 
-pub(crate) fn ensure_git_hook(root: &Path) -> Result<String, String> {
-    let dir = match git_text(root, &["config", "core.hooksPath"]) {
+/// The directory that holds this clone's git hooks.
+pub(crate) fn git_hooks_dir(root: &Path) -> Result<PathBuf, String> {
+    Ok(match git_text(root, &["config", "core.hooksPath"]) {
         Ok(custom) if !custom.is_empty() => root.join(custom),
         _ => root.join(git_text(root, &["rev-parse", "--git-path", "hooks"])?),
-    };
+    })
+}
+
+/// The line that `lock install` adds to the pre-commit hook.
+pub(crate) fn git_hook_line() -> String {
+    format!(
+        "{{ command -v lock >/dev/null 2>&1 || {{ echo 'lock is not installed: {HOME}' >&2; exit 1; }}; lock check --staged || exit 1; }} # lock"
+    )
+}
+
+pub(crate) fn ensure_git_hook(root: &Path) -> Result<String, String> {
+    let dir = git_hooks_dir(root)?;
     let hook = dir.join("pre-commit");
     let current = fs::read_to_string(&hook).unwrap_or_else(|_| "#!/bin/sh\n".into());
-    let line = format!(
-        "{{ command -v lock >/dev/null 2>&1 || {{ echo 'lock is not installed: {HOME}' >&2; exit 1; }}; lock check --staged || exit 1; }} # lock"
-    );
+    let line = git_hook_line();
     if current.lines().any(|existing| existing == line) {
         return Ok("The pre-commit hook already runs the lock check.".into());
     }
@@ -343,5 +361,77 @@ pub fn run(flags: &[String]) -> Result<i32, String> {
     for step in steps {
         println!("lock: {}", step(root)?);
     }
+    let chosen: Vec<(&str, &str)> = AGENT_FILES
+        .iter()
+        .zip(["--claude", "--codex", "--cursor"])
+        .filter(|(_, flag)| wants(flag))
+        .map(|(agent, _)| *agent)
+        .collect();
+    let files: Vec<&str> = chosen.iter().map(|(_, file)| *file).collect();
+    let ignored = crate::doctor::git_ignored(root, &files);
+    if !ignored.is_empty() {
+        println!("{}", ignored_warning(&ignored));
+    }
+    let agents: Vec<&str> = chosen.iter().map(|(name, _)| *name).collect();
+    println!(
+        "{}",
+        next_steps(&agents, crate::doctor::lock_on_path().as_deref())
+    );
     Ok(0)
+}
+
+/// Says that teammates will not get hook files that git ignores, and how to share them.
+pub(crate) fn ignored_warning(files: &[String]) -> String {
+    let mut text = String::new();
+    for file in files {
+        text.push_str(&format!(
+            "lock: warning: {file} is git-ignored, so teammates and CI will not get it.\n"
+        ));
+    }
+    text.push_str(
+        "lock: to share the hooks, add these lines to .gitignore, then `git add` the files:\n",
+    );
+    for file in files {
+        let folder = file.split('/').next().unwrap_or(file);
+        text.push_str(&format!("lock:   !{folder}/\nlock:   !{file}\n"));
+    }
+    text.push_str("lock: `git check-ignore -v <file>` shows which rule ignores a file.");
+    text
+}
+
+/// What the person does next, in the order that matters. A session that started before
+/// `lock install` never ran the hooks, so only the commit check guards it.
+pub(crate) fn next_steps(agents: &[&str], on_path: Option<&Path>) -> String {
+    let mut steps: Vec<String> = Vec::new();
+    if !agents.is_empty() {
+        steps.push(
+            "Restart any agent that was already running in this repository. A session that\n     started before lock install runs no hooks, so its edits are NOT guarded until you\n     restart it. Only the commit check stops them."
+                .into(),
+        );
+        let mut trust = String::from("Trust the hooks once:");
+        for agent in agents {
+            trust.push_str(match *agent {
+                "Claude Code" => "\n       Claude Code: accept the folder trust prompt when it starts.",
+                "Codex" => {
+                    "\n       Codex: open /hooks and review the new hooks. Codex runs none until you do."
+                }
+                _ => "\n       Cursor: reopen the project so it reads .cursor/hooks.json.",
+            });
+        }
+        steps.push(trust);
+    }
+    steps.push(match on_path {
+        Some(path) => format!(
+            "lock is on your PATH at {}. An agent finds lock on the PATH it had when it\n     started, so start it from a shell where `lock --version` works.",
+            path.display()
+        ),
+        None => "WARNING: lock is not on your PATH, so an agent cannot run it and the hooks block\n     every edit. Add the folder that holds lock to your PATH, then restart the agent."
+            .into(),
+    });
+    steps.push("Check that everything works: lock doctor".into());
+    let mut text = String::from("\nlock: Next steps");
+    for (number, step) in steps.iter().enumerate() {
+        text.push_str(&format!("\n  {}. {step}", number + 1));
+    }
+    text
 }
