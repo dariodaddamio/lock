@@ -20,7 +20,8 @@
 - New command `lock doctor` checks the setup without changing anything: `lock` on the
   PATH, the commit hook, each agent's hook entries, ignored hook files, `.locks`, the
   lock markers, and a canary that replays an edit to a locked file and reports
-  whether the hook would deny it. It exits with a non-zero code when a check fails.
+  whether the hook would deny it. It exits with a non-zero code when a check fails. A missing hook file for an
+  agent that is installed on this machine counts as a failure.
 
 ## 0.3.2 - October 30, 2026
 

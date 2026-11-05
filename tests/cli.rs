@@ -239,3 +239,41 @@ fn doctor_warns_about_git_ignored_hook_files_without_failing() {
     assert!(out.contains("WARN"), "{out}");
     assert!(out.contains(".cursor/hooks.json"), "{out}");
 }
+
+fn lock_at_home(dir: &Path, home: &Path, path: &std::ffi::OsStr) -> Output {
+    Command::new(BIN)
+        .arg("doctor")
+        .current_dir(dir)
+        .env("PATH", path)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env_remove("CI")
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn doctor_fails_when_a_used_agents_hook_file_is_absent() {
+    let dir = marked_repo();
+    lock(&dir, &["install", "--claude", "--git"]);
+    let home = std::env::temp_dir().join(format!("lock-home-{}", std::process::id()));
+    fs::create_dir_all(home.join(".codex")).unwrap();
+    let run = lock_at_home(&dir, &home, &with_path(&bin_dir()));
+    let out = text(&run);
+    assert_eq!(run.status.code(), Some(1), "{out}");
+    assert!(out.contains("FAIL  .codex/hooks.json is missing"), "{out}");
+}
+
+#[test]
+fn doctor_only_warns_for_an_agent_that_is_not_in_use() {
+    let dir = marked_repo();
+    lock(&dir, &["install", "--claude", "--git"]);
+    let home = std::env::temp_dir().join(format!("lock-home-empty-{}", std::process::id()));
+    fs::create_dir_all(&home).unwrap();
+    // A PATH with only lock and git cannot hold the other agents' commands.
+    let only = std::env::join_paths([bin_dir(), git_dir()]).unwrap();
+    let run = lock_at_home(&dir, &home, &only);
+    let out = text(&run);
+    assert_eq!(run.status.code(), Some(0), "{out}");
+    assert!(out.contains("WARN  .codex/hooks.json is missing"), "{out}");
+}

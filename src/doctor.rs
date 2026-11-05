@@ -207,13 +207,38 @@ fn agent_checks(root: &Path) -> Vec<Check> {
         ));
     } else {
         for (agent, file) in absent {
-            checks.push(Check::warn(
-                format!("{file} is missing, so {agent} is not guarded"),
-                format!("Run `lock install --{}` if you use {agent}.", flag(agent)),
-            ));
+            let name = format!("{file} is missing, so {agent} is not guarded");
+            let install = format!("Run `lock install --{}`.", flag(agent));
+            // Only an agent that has left no trace on this machine is excused.
+            checks.push(if agent_in_use(agent) {
+                Check::fail(name, install)
+            } else {
+                Check::warn(
+                    name,
+                    format!("Fine if you do not use {agent}. Otherwise: {install}"),
+                )
+            });
         }
     }
     checks
+}
+
+/// Whether the agent's folder exists in the home directory or its command is on the PATH.
+fn agent_in_use(agent: &str) -> bool {
+    let (folder, command) = match agent {
+        "Claude Code" => (".claude", "claude"),
+        "Codex" => (".codex", "codex"),
+        _ => (".cursor", "cursor"),
+    };
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    home.is_some_and(|home| Path::new(&home).join(folder).exists())
+        || std::env::var_os("PATH").is_some_and(|path| {
+            std::env::split_paths(&path).any(|dir| {
+                ["", ".exe", ".cmd"]
+                    .iter()
+                    .any(|ext| dir.join(format!("{command}{ext}")).is_file())
+            })
+        })
 }
 
 fn flag(agent: &str) -> &'static str {

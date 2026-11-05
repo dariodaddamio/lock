@@ -54,7 +54,7 @@ hooks, open `/hooks` in Codex and trust them.
 
 `lock install` ends with these steps for your agents. Run `lock doctor` afterwards to
 check them: it prints a PASS, WARN, or FAIL line for each part of the setup and says how
-to fix it. If the hook files are in `.gitignore`, `lock install` and `lock doctor`
+to fix it. A missing hook file for an agent that you use is a FAIL. If the hook files are in `.gitignore`, `lock install` and `lock doctor`
 warn you, because teammates do not get files that git ignores.
 
 ## At a glance
