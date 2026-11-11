@@ -1,12 +1,14 @@
 # lock
 
 [![CI](https://github.com/dariodaddamio/lock/actions/workflows/ci.yml/badge.svg)](https://github.com/dariodaddamio/lock/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://dariodaddamio.github.io/lock/)
 [![Release](https://img.shields.io/github/v/release/dariodaddamio/lock)](https://github.com/dariodaddamio/lock/releases/latest)
 [![crates.io](https://img.shields.io/crates/v/lock-hook)](https://crates.io/crates/lock-hook)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 `lock` prevents coding agents from being able to change parts of your repo that
-must not be changed.
+must not be changed. Full documentation is on
+[GitHub Pages](https://dariodaddamio.github.io/lock/).
 
 ![An agent's edit to a locked tagline is refused, and the file on disk stays unchanged](docs/edit-before-after.svg)
 
@@ -371,15 +373,25 @@ review from Code Owners**, and add these lines to `.github/CODEOWNERS`:
 
 `lock` is built so that no tool call, script, or settings change by an agent can
 change locked text without your approval. An agent runs as you, on your machine, so
-a few cases remain, and each one is caught before the change can be committed or
-merged:
+a few cases remain. Most are caught before the change can be committed or merged;
+a few are only caught by CI after the fact. Full detail lives in the
+[Limits](https://dariodaddamio.github.io/lock/limits/) docs page.
 
 - A process that an agent starts and that keeps running after the agent's turn
   ends can still change a locked file. The change stays on disk, but it cannot be
   committed until you approve it, and `lock approve` shows it to you first.
-- Such a process could also write an approval record, because a record is a plain
-  file. On the main branch, code owner review of `.locks/` makes sure that a person
-  accepted each record.
+- Changes made between tool calls, such as by a leftover process, another hook,
+  or a person, become the next baseline. Only the commit check and CI catch them.
+- A `git push` inside an agent command cannot be undone. CI after the fact is the
+  only net.
+- An agent that fakes a terminal and runs `lock approve` from a detached process
+  outside any tracked tool call gets past the approval check. Code owner review of
+  `.locks/` on the protected branch is what stops a forged record.
+- Another agent host, or a worktree where nobody ran `lock install`, is not
+  guarded at edit time. The commit check and CI still apply once those hooks exist.
+- Such a leftover process could also write an approval record, because a record is
+  a plain file. On the main branch, code owner review of `.locks/` makes sure that
+  a person accepted each record.
 - Codex lets a call through when its hook fails, when `lock` is not installed, or
   when the hooks changed and you have not reviewed them yet. The commit check and
   CI still catch the change.

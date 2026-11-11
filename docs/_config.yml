@@ -1,0 +1,23 @@
+title: lock
+description: Freeze regions of a repository so coding agents cannot change them without a person's approval.
+remote_theme: just-the-docs/just-the-docs@v0.10.1
+plugins:
+  - jekyll-remote-theme
+  - jekyll-seo-tag
+url: https://dariodaddamio.github.io
+baseurl: /lock
+repository: dariodaddamio/lock
+color_scheme: light
+search_enabled: true
+heading_anchors: true
+aux_links:
+  "GitHub":
+    - "https://github.com/dariodaddamio/lock"
+  "Releases":
+    - "https://github.com/dariodaddamio/lock/releases"
+footer_content: 'MIT licensed. Report a way around lock in <a href="https://github.com/dariodaddamio/lock/blob/main/SECURITY.md">SECURITY.md</a>.'
+gh_edit_link: true
+gh_edit_repository: "https://github.com/dariodaddamio/lock"
+gh_edit_branch: "main"
+gh_edit_source: docs
+gh_edit_view_mode: "tree"

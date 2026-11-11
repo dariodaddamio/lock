@@ -102,6 +102,8 @@ pub fn hash(bytes: &[u8]) -> String {
 /// the same, and `encode` turns the text back into the same bytes. Returns whether
 /// the bytes were read one per character.
 pub fn decode(bytes: &[u8]) -> (String, bool) {
+    // A UTF-8 BOM before a line-1 marker would otherwise hide START and orphan END.
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
     match std::str::from_utf8(bytes) {
         Ok(text) => (text.to_string(), false),
         Err(_) => (bytes.iter().map(|&byte| char::from(byte)).collect(), true),
@@ -216,4 +218,27 @@ pub fn splice(path: &str, from: &[u8], into: &[u8], ids: &[&str]) -> Option<Vec<
         text.replace_range(start..end, replacement);
     }
     Some(encode(&text, new_bytewise))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bom_before_line_one_marker_is_stripped() {
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend(b"/* LOCKED: bom START */\nconst x = 1;\n/* LOCKED: bom END */\n");
+        let (text, bytewise) = decode(&bytes);
+        assert!(!bytewise);
+        let found = regions("src/app.ts", &text).expect("markers parse");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "bom");
+    }
+
+    #[test]
+    fn unsupported_extension_finds_no_regions() {
+        let source = "# LOCKED: none START\nx\n# LOCKED: none END\n";
+        let found = regions("Dockerfile", source).expect("no markers");
+        assert!(found.is_empty());
+    }
 }

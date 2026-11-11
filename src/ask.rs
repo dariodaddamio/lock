@@ -261,6 +261,35 @@ pub fn confirm(root: &Path, call: &str) -> Result<Option<String>, String> {
     )))
 }
 
+/// Whether an open in-chat approval ticket expects this lock to end in `after`.
+/// A parallel Read or other tool must not put the region back while that yes is still
+/// landing, or the edit's own PostToolUse would find nothing to record.
+pub fn expecting(root: &Path, path: &str, id: &str, after: Option<&str>) -> bool {
+    let Ok(entries) = fs::read_dir(tickets(root)) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let Ok(bytes) = fs::read(entry.path()) else {
+            continue;
+        };
+        let Ok(record) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        for ask in record
+            .get("asks")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let text = |key: &str| ask.get(key).and_then(Value::as_str);
+            if text("path") == Some(path) && text("id") == Some(id) && text("after") == after {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Removes the tickets of a turn that ended, and stale tickets and marks. A ticket
 /// whose prompt was answered with no never meets its edit.
 pub fn prune(root: &Path, session: &str) {

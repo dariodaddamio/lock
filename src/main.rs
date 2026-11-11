@@ -48,7 +48,7 @@ Commands:
                 The agent hook, which the agent runs with one tool call on stdin
 
 Start with `lock install` in the root of a repository.
-Documentation: https://github.com/dariodaddamio/lock";
+Documentation: https://dariodaddamio.github.io/lock/";
 
 fn root() -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
@@ -76,6 +76,15 @@ fn check(args: &[String]) -> Result<i32, String> {
         None => (View::Worktree, "HEAD".into(), "HEAD".into()),
     };
     let problems = violations(&root, &view, &base)?;
+    if let Ok(paths) = repo::unsupported_markers(&root)
+        && !paths.is_empty()
+    {
+        eprintln!(
+            "lock: warning: LOCKED: in unsupported file type{} (locks nothing): {}. Use a supported comment syntax, or lock the whole file in .locks/files.json.",
+            if paths.len() == 1 { "" } else { "s" },
+            paths.join(", ")
+        );
+    }
     // Every locked change needs an approval from a person, including your own edits:
     // a change that no hook saw could also come from an agent without hooks or from a
     // process that an agent left running. `lock approve` shows the change and records

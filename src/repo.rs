@@ -2,7 +2,7 @@
 //! working tree.
 
 use crate::paths::{eq, normalize};
-use crate::regions::{self, hash};
+use crate::regions::{self, hash, supports_markers};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fs;
@@ -282,6 +282,20 @@ pub fn inventory(root: &Path, view: &View) -> Result<Locks, String> {
     paths.sort();
     paths.dedup();
     locks_in(root, view, &paths, &whole)
+}
+
+/// Paths that contain `LOCKED:` but cannot hold markers. Those markers lock nothing.
+pub fn unsupported_markers(root: &Path) -> Result<Vec<String>, String> {
+    let whole =
+        parse_file_locks(fs::read(root.join(FILE_LOCKS)).ok().as_deref()).unwrap_or_default();
+    let mut paths = Vec::new();
+    for path in View::Worktree.marked(root)? {
+        if supports_markers(&path) || whole.iter().any(|locked| eq(locked, &path)) {
+            continue;
+        }
+        paths.push(path);
+    }
+    Ok(paths)
 }
 
 /// The locks in some files of a view. `whole` lists the whole-file locks of the view.

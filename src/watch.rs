@@ -9,6 +9,7 @@
 //! the background keeps its copy until the turn ends and is checked then. The copies
 //! are removed when the call ends, or when the agent's turn ends.
 
+use crate::ask;
 use crate::guard;
 use crate::head;
 use crate::hook::{HOOK_CONFIGS, weakens_hooks};
@@ -107,7 +108,8 @@ fn watched(root: &Path, pre_commit: &str) -> Result<Vec<String>, String> {
 
 /// Copies the watched files before an agent command runs.
 /// A command that runs in the background reports back before it is done, so its copy
-/// stays until the turn ends and is checked then.
+/// stays until the turn ends and is checked then. Files that still match HEAD are not
+/// copied byte for byte; the settle step reads them from that commit instead.
 pub fn before(root: &Path, session: &str, command: &str, background: bool) -> Result<(), String> {
     prune(root, None);
     let dir = runs(root).join(key(session, command));
@@ -117,10 +119,20 @@ pub fn before(root: &Path, session: &str, command: &str, background: bool) -> Re
     for (index, path) in watched(root, &pre_commit)?.into_iter().enumerate() {
         let entry = match fs::read(root.join(&path)) {
             Ok(bytes) => {
-                let name = index.to_string();
-                fs::write(dir.join(&name), bytes)
-                    .map_err(|error| format!("could not copy {path}: {error}"))?;
-                json!(name)
+                let at_head = head.as_ref().is_some_and(|commit| {
+                    git(root, &["show", &format!("{commit}:{path}")])
+                        .ok()
+                        .as_ref()
+                        == Some(&bytes)
+                });
+                if at_head {
+                    json!("HEAD")
+                } else {
+                    let name = index.to_string();
+                    fs::write(dir.join(&name), bytes)
+                        .map_err(|error| format!("could not copy {path}: {error}"))?;
+                    json!(name)
+                }
             }
             Err(_) => Value::Null,
         };
@@ -187,14 +199,22 @@ impl Snapshot {
             .unwrap_or_default()
     }
 
-    /// `None` when the file was not copied; `Some(None)` when it did not exist.
-    fn read(&self, path: &str) -> Result<Option<Option<Vec<u8>>>, String> {
+    /// `None` when the file was not watched; `Some(None)` when it did not exist.
+    /// A `"HEAD"` entry means the file matched the snapshot's commit, so the bytes
+    /// come from that commit instead of a copy.
+    fn read(&self, root: &Path, path: &str) -> Result<Option<Option<Vec<u8>>>, String> {
         let Some(entry) = self.manifest.get("files").and_then(|files| files.get(path)) else {
             return Ok(None);
         };
         let Some(name) = entry.as_str() else {
             return Ok(Some(None));
         };
+        if name == "HEAD" {
+            let Some(commit) = self.field("head") else {
+                return Ok(Some(None));
+            };
+            return Ok(Some(git(root, &["show", &format!("{commit}:{path}")]).ok()));
+        }
         fs::read(self.dir.join(name))
             .map(|bytes| Some(Some(bytes)))
             .map_err(|error| format!("could not read snapshot copy of {path}: {error}"))
@@ -460,7 +480,7 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
         }
     }
     for path in config {
-        let before = snapshot.read(&path)?.unwrap_or(None);
+        let before = snapshot.read(root, &path)?.unwrap_or(None);
         let now = fs::read(root.join(&path)).ok();
         if now == before {
             continue;
@@ -484,7 +504,7 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
         if !config && !is_pre_commit(path) {
             continue;
         }
-        let before = snapshot.read(path)?.unwrap_or(None);
+        let before = snapshot.read(root, path)?.unwrap_or(None);
         let now = fs::read(root.join(path)).ok();
         let weakened = if config {
             weakens_hooks(before.as_deref(), now.as_deref())
@@ -590,16 +610,18 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
 
     // Whole-file locks, as the configuration listed them before the command.
     let whole: Vec<String> =
-        parse_file_locks(snapshot.read(FILE_LOCKS)?.flatten().as_deref()).unwrap_or_default();
+        parse_file_locks(snapshot.read(root, FILE_LOCKS)?.flatten().as_deref()).unwrap_or_default();
     // Locked files that the command moved or deleted, which lock brings back.
     let mut brought_back: Vec<String> = Vec::new();
     for path in &whole {
-        let Some(before) = snapshot.read(path)? else {
+        let Some(before) = snapshot.read(root, path)? else {
             continue;
         };
         let now = fs::read(root.join(path)).ok();
         let (from, to) = (before.as_deref().map(hash), now.as_deref().map(hash));
-        if judge.allows(path, WHOLE_FILE, from.as_deref(), to.as_deref()) {
+        if judge.allows(path, WHOLE_FILE, from.as_deref(), to.as_deref())
+            || ask::expecting(root, path, WHOLE_FILE, to.as_deref())
+        {
             continue;
         }
         put(root, path, before.as_deref())?;
@@ -627,7 +649,7 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
         if path.starts_with(".locks/") || !supports_markers(path) || whole.contains(path) {
             continue;
         }
-        let Some(Some(before)) = snapshot.read(path)? else {
+        let Some(Some(before)) = snapshot.read(root, path)? else {
             continue;
         };
         let now = fs::read(root.join(path)).ok();
@@ -652,7 +674,9 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
                 .as_ref()
                 .and_then(|found| found.iter().find(|candidate| candidate.id == region.id));
             let to = next.map(|candidate| candidate.hash.as_str());
-            if judge.allows(path, &region.id, Some(&region.hash), to) {
+            if judge.allows(path, &region.id, Some(&region.hash), to)
+                || ask::expecting(root, path, &region.id, to)
+            {
                 continue;
             }
             pending::save(
