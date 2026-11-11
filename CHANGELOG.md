@@ -8,6 +8,8 @@
   edit's own PostToolUse can record it (#7).
 - While an in-chat approval ticket is still open, settle does not put that region
   back, so an unknown or MCP tool that did take a snapshot cannot undo the yes (#7).
+- In-chat approval records the disk approval before it drops the open ticket, so a
+  parallel settle cannot hit a gap with neither protection (#7).
 - Snapshots copy only locked files that differ from the commit recorded at
   PreToolUse; files that still match that commit are read from git instead (#7).
 - A UTF-8 byte-order mark before a line-1 marker no longer hides `START` (#8).

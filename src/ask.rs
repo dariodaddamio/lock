@@ -223,7 +223,6 @@ pub fn confirm(root: &Path, call: &str) -> Result<Option<String>, String> {
     let Ok(bytes) = fs::read(&file) else {
         return Ok(None);
     };
-    let _ = fs::remove_file(&file);
     let record: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
     let mut recorded = Vec::new();
     for ask in record
@@ -240,6 +239,8 @@ pub fn confirm(root: &Path, call: &str) -> Result<Option<String>, String> {
         if state(root, path, id).as_deref() != after {
             continue;
         }
+        // Record the approval before dropping the ticket. A parallel settle must not
+        // see a gap where neither the open ticket nor a disk approval protects the edit.
         let saved = approve::record(
             root,
             path,
@@ -252,6 +253,8 @@ pub fn confirm(root: &Path, call: &str) -> Result<Option<String>, String> {
         pending::forget(root, path, id, after);
         recorded.push(saved);
     }
+    // Drop the ticket only after approvals are on disk (or none matched).
+    let _ = fs::remove_file(&file);
     if recorded.is_empty() {
         return Ok(None);
     }
