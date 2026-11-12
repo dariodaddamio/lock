@@ -1,9 +1,6 @@
 ---
 title: Commands
-nav_order: 5
 ---
-
-# Commands
 
 | Command | What it does |
 | --- | --- |

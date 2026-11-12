@@ -1,9 +1,6 @@
 ---
 title: Questions
-nav_order: 8
 ---
-
-# Questions
 
 ### How do I change locked text myself?
 
@@ -15,7 +12,7 @@ change. Until you do, the commit hook that `lock install` adds refuses the commi
 
 A move counts as removing the locked text from its old path.
 
-![When an agent moves a locked file, lock puts it back and the commit is refused; when you move it, you approve once and the lock lives at the new path](move.svg)
+![When an agent moves a locked file, lock puts it back and the commit is refused; when you move it, you approve once and the lock lives at the new path](/lock/move.svg)
 
 | Who moves it | What happens |
 | --- | --- |

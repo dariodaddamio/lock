@@ -1,9 +1,6 @@
 ---
 title: Using lock
-nav_order: 2
 ---
-
-# Using lock
 
 You make the decisions and your agent does the writing, so in practice you do one
 of four things:
@@ -26,7 +23,7 @@ edit again, and Claude Code shows you the diff in its own edit prompt. Choosing
 **Yes** lets the edit through, and `lock` records your approval in
 `.locks/approvals/` so that you can commit it with the change.
 
-![In Claude Code, lock refuses the first edit, the agent asks the user, and the retried edit opens Claude Code's edit prompt with the diff](approve-in-chat.svg)
+![In Claude Code, lock refuses the first edit, the agent asks the user, and the retried edit opens Claude Code's edit prompt with the diff](/lock/approve-in-chat.svg)
 
 This works in the Manual, Accept edits, and Auto permission modes. In Bypass
 permissions mode, Claude Code shows no prompt, so `lock` refuses the edit instead
@@ -40,7 +37,7 @@ before it runs, and your own edits need an approval too, so for these you run
 text, it shows a header with the file, the kind of lock, where the change came from,
 and the number of lines that changed, followed by the diff:
 
-![lock approve shows the change, a short header, and the diff of the locked region; you press y, and the approval is recorded](approve.svg)
+![lock approve shows the change, a short header, and the diff of the locked region; you press y, and the approval is recorded](/lock/approve.svg)
 
 After each diff, `lock approve` asks one question. Press a key and then Enter:
 

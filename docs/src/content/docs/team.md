@@ -1,9 +1,6 @@
 ---
-title: Team setup
-nav_order: 7
+title: Set up a team repository
 ---
-
-# Set up a team repository
 
 For a repository that other people or a CI system use, add two things.
 

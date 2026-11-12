@@ -1,14 +1,12 @@
 ---
 title: Limits
-nav_order: 4
 ---
-
-# Limits
 
 `lock` is built so that no tool call, script, or settings change by an agent can
 change locked text without your approval. An agent runs as you, on your machine, so
-a few cases remain. State them plainly so people know what lock covers and what it
-does not.
+a few cases remain. Most are caught before the change can be committed or merged;
+a few are only caught by CI after the fact. State them plainly so people know what
+lock covers and what it does not.
 
 ## Caught before commit or merge
 

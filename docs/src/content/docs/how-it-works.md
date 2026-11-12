@@ -1,9 +1,6 @@
 ---
 title: How it works
-nav_order: 3
 ---
-
-# How it works
 
 `lock` checks each change to locked text at five points:
 
@@ -58,7 +55,7 @@ call, and after the call it puts back any locked text that changed without
 approval. All other changes stay. A command that runs in the background reports
 back before it is done, so `lock` checks it again when the turn ends.
 
-![A script changes an unlocked line and a locked line, and lock keeps the first change and puts back the second](script-before-after.svg)
+![A script changes an unlocked line and a locked line, and lock keeps the first change and puts back the second](/lock/script-before-after.svg)
 
 The same check guards everything that decides whether `lock` runs at all. An agent
 cannot write an approval record, remove a whole-file lock, change or remove the
@@ -84,7 +81,8 @@ through.
 Each hook is a short process that starts, checks, and exits. These are the medians
 of 40 runs on GitHub's hosted runners, in a generated repository with 10,000 files
 and 300 locks. The [CI benchmark](https://github.com/dariodaddamio/lock/blob/main/.github/workflows/ci.yml)
-measures them again on each push to the main branch.
+measures them again on each push to the main branch, and it also measures repositories
+with 10 and 1,000 files.
 
 | Step | Linux | macOS | Windows |
 | --- | --- | --- | --- |
@@ -97,6 +95,10 @@ An edit is checked in memory, so its time does not grow with the repository. The
 check before a shell command copies locked files that differ from HEAD, so its
 time grows with how many of those files have local edits. The commit check reads
 only the files that the commit changes.
+
+These runners are shared machines, so a number can move by a third from one run
+to the next. To measure your own machine, run
+`python3 tests/bench.py <path to lock>`.
 
 | Size | |
 | --- | --- |

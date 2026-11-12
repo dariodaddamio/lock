@@ -1,20 +1,18 @@
 ---
 title: Home
-nav_order: 1
 description: lock prevents coding agents from changing settled parts of a repository without a person's approval.
+template: splash
+hero:
+  title: lock
+  tagline: "<code>lock</code> prevents coding agents from being able to change parts of your repo that must not be changed."
+  actions:
+    - text: Get started
+      link: /lock/#quick-start
+    - text: View on GitHub
+      link: https://github.com/dariodaddamio/lock
 ---
 
-# lock
-{: .fs-9 }
-
-`lock` prevents coding agents from being able to change parts of your repo that
-must not be changed.
-{: .fs-6 .fw-300 }
-
-[Get started](#quick-start){: .btn .btn-primary .fs-5 .mb-4 .mb-md-0 .mr-2 }
-[View on GitHub](https://github.com/dariodaddamio/lock){: .btn .fs-5 .mb-4 .mb-md-0 }
-
-![An agent's edit to a locked tagline is refused, and the file on disk stays unchanged](edit-before-after.svg)
+![An agent's edit to a locked tagline is refused, and the file on disk stays unchanged](/lock/edit-before-after.svg)
 
 Some parts of a project are settled, such as the copy on a landing page, a
 released changelog entry, or the timing of an animation. A coding agent cannot
@@ -69,10 +67,10 @@ warn you, because teammates do not get files that git ignores.
 | --- | --- |
 | Agents | Claude Code, Codex, and Cursor |
 | Platforms | macOS (Apple silicon and Intel), Linux (x64 and ARM64), and Windows (x64 and ARM64) |
-| File types | Most code, style, markup, and config files. Any other file can be locked as a whole. |
+| File types | Most code, style, markup, and config files, as [listed in Lock markers](/lock/markers/). Any other file can be locked as a whole. |
 | Requirements | git. There is no runtime, server, account, or background process. |
-| Size | One binary of 0.75 to 0.9 MB, downloaded as 350 to 480 KB, with two dependencies. |
-| Speed | 1 to 7 ms before an edit and 10 to 190 ms for the commit check. |
+| Size | One binary of 0.75 to 0.9 MB, downloaded as 350 to 480 KB, with two dependencies. It uses about 5 MB of memory while it runs. |
+| Speed | 1 to 7 ms before an edit and 10 to 190 ms for the commit check, whatever the size of the repository. See [Speed and size](/lock/how-it-works/#speed-and-size). |
 
 ## What lock is
 
@@ -103,7 +101,7 @@ each clone on `npm install`.
 
 ## Next
 
-- [Using lock](using.md) — day-to-day decisions and approvals
-- [How it works](how-it-works.md) — the five check points
-- [Limits](limits.md) — what lock does and does not stop
-- [Commands](commands.md) — CLI reference
+- [Using lock](/lock/using/) — day-to-day decisions and approvals
+- [How it works](/lock/how-it-works/) — the five check points
+- [Limits](/lock/limits/) — what lock does and does not stop
+- [Commands](/lock/commands/) — CLI reference

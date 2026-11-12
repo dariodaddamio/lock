@@ -1,4 +1,4 @@
-# Build and deploy the docs/ Jekyll site to GitHub Pages.
+# Build and deploy the docs/ Astro site to GitHub Pages.
 # Repository Settings → Pages → Source must be "GitHub Actions".
 
 name: Pages
@@ -25,14 +25,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-      - uses: actions/jekyll-build-pages@v1
+      - uses: withastro/action@v4
         with:
-          source: ./docs
-          destination: ./_site
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./_site
+          path: ./docs
+          node-version: 22
 
   deploy:
     needs: build
