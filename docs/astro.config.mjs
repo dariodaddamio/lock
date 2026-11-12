@@ -1,5 +1,6 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import starlightThemeBlack from 'starlight-theme-black';
 
 export default defineConfig({
   site: 'https://dariodaddamio.github.io',
@@ -7,6 +8,14 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'lock',
+      plugins: [
+        starlightThemeBlack({
+          navLinks: [
+            { label: 'Docs', link: '/using/' },
+            { label: 'Releases', link: 'https://github.com/dariodaddamio/lock/releases' },
+          ],
+        }),
+      ],
       description:
         "Freeze regions of a repository so coding agents cannot change them without a person's approval.",
       social: [
