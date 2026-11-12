@@ -2,6 +2,25 @@ use super::*;
 use std::io::Cursor;
 use std::path::PathBuf;
 
+#[test]
+fn candidates_drop_pending_text_whose_hash_does_not_match() {
+    let root = std::env::temp_dir().join(format!("lock-pending-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join(".git/lock/pending")).unwrap();
+    let bad = serde_json::json!({
+        "path": "a.ts", "id": "tagline", "before": hash(b"old"),
+        "after": hash(b"new"), "beforeText": "old", "afterText": "forged"
+    });
+    std::fs::write(
+        root.join(".git/lock/pending/bad.json"),
+        format!("{bad:#}\n"),
+    )
+    .unwrap();
+    assert!(candidates(&root).unwrap().is_empty());
+    assert!(!root.join(".git/lock/pending/bad.json").exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
 fn item(path: &str, id: &str, pending: bool, after: Option<&str>) -> Candidate {
     Candidate {
         path: path.into(),

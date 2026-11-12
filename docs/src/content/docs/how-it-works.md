@@ -7,7 +7,7 @@ title: How it works
 | When | What lock checks | What happens to an unapproved change |
 | --- | --- | --- |
 | Before an agent edit | The edit, applied to the file in memory | The edit is refused, and nothing is written. |
-| Around any other agent tool call, such as a shell command or an MCP tool | Each locked file, the lock configuration, the agent settings, and git's `core.hooksPath`, before and after the call | The change is put back, and the agent is told why. |
+| Around any other agent tool call, such as a shell command or an MCP tool | Each locked file, the lock configuration, the agent settings, and git's `core.hooksPath`, before and after the call, including when the host reports failure | The change is put back, and the agent is told why. |
 | At the end of a turn | Each command that the agent ran in the background | The locked text is put back, and you are told. |
 | Before a commit | Each locked change in the commit | The commit is refused until you approve the change. |
 | In CI | Each locked change since the base branch | The check fails. |
@@ -99,6 +99,10 @@ only the files that the commit changes.
 These runners are shared machines, so a number can move by a third from one run
 to the next. To measure your own machine, run
 `python3 tests/bench.py <path to lock>`.
+
+A check that takes longer than 50 seconds is treated like any other error, and
+the tool call is blocked, because a host that waits too long for a hook runs the
+call anyway.
 
 | Size | |
 | --- | --- |

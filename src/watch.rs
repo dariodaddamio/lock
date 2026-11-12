@@ -12,7 +12,7 @@
 use crate::ask;
 use crate::guard;
 use crate::head;
-use crate::hook::{HOOK_CONFIGS, weakens_hooks};
+use crate::hook::HOOK_CONFIGS;
 use crate::install::ensure_git_hook;
 use crate::pending;
 use crate::regions::{decode, hash, regions, splice, supports_markers};
@@ -94,7 +94,7 @@ fn is_pre_commit(path: &str) -> bool {
 
 /// Every file whose change lock must check after a command.
 fn watched(root: &Path, pre_commit: &str) -> Result<Vec<String>, String> {
-    let mut paths = View::Worktree.marked(root)?;
+    let mut paths = View::marked_anywhere(root)?;
     paths.extend(
         parse_file_locks(fs::read(root.join(FILE_LOCKS)).ok().as_deref()).unwrap_or_default(),
     );
@@ -113,6 +113,16 @@ fn watched(root: &Path, pre_commit: &str) -> Result<Vec<String>, String> {
 pub fn before(root: &Path, session: &str, command: &str, background: bool) -> Result<(), String> {
     prune(root, None);
     let dir = runs(root).join(key(session, command));
+    // A snapshot with the same key belongs to an earlier run of the same command that
+    // never reached its after-check, such as one that failed or was interrupted on a
+    // host that sends no call id. Taking a new snapshot over it would make that run's
+    // changes the new baseline, so it is settled first.
+    if let Some(earlier) = Snapshot::load(dir.clone()) {
+        if let Some(message) = settle(root, &earlier)? {
+            eprintln!("{message}");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
     fs::create_dir_all(&dir).map_err(|error| format!("could not copy locked files: {error}"))?;
     let (pre_commit, head) = hooks_and_head(root);
     let mut files = Map::new();
@@ -373,8 +383,7 @@ impl Judge<'_> {
 pub fn settle_background(root: &Path, session: &str) -> Result<Option<String>, String> {
     let mut messages = Vec::new();
     for snapshot in snapshots(root) {
-        let background = snapshot.manifest.get("background") == Some(&Value::Bool(true));
-        if !background || snapshot.field("session") != Some(session) {
+        if snapshot.field("session") != Some(session) {
             continue;
         }
         let result = settle(root, &snapshot);
@@ -506,8 +515,19 @@ fn settle(root: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
         }
         let before = snapshot.read(root, path)?.unwrap_or(None);
         let now = fs::read(root.join(path)).ok();
+        if before == now {
+            continue;
+        }
         let weakened = if config {
-            weakens_hooks(before.as_deref(), now.as_deref())
+            !(path == ".claude/settings.json"
+                && guard::safe_change(
+                    guard::Kind::Claude,
+                    before
+                        .as_deref()
+                        .and_then(|bytes| std::str::from_utf8(bytes).ok()),
+                    now.as_deref()
+                        .and_then(|bytes| std::str::from_utf8(bytes).ok()),
+                ))
         } else {
             count(now.as_deref(), "# lock") < count(before.as_deref(), "# lock")
         };

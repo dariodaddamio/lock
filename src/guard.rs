@@ -81,90 +81,39 @@ pub fn external_kind(path: &Path) -> Option<Kind> {
         .map(|(_, kind)| kind)
 }
 
-fn count(text: Option<&str>, needle: &str) -> usize {
-    text.map_or(0, |text| text.matches(needle).count())
-}
-
-/// How many lines of a TOML file set one of `keys` to `value`.
-fn settings(text: Option<&str>, keys: &[&str], value: &str) -> usize {
-    text.unwrap_or_default()
-        .lines()
-        .filter(|line| {
-            let line = line.trim().to_ascii_lowercase();
-            let Some((key, rest)) = line.split_once('=') else {
-                return false;
-            };
-            keys.contains(&key.trim()) && rest.trim().trim_matches('"') == value
-        })
-        .count()
-}
-
 /// Whether a change to a guarded file turns lock off or routes around it.
 pub fn weakens(kind: Kind, before: Option<&str>, after: Option<&str>) -> bool {
+    !safe_change(kind, before, after)
+}
+
+/// Agent settings are safe to edit only when the change is confined to Claude's
+/// ordinary permission choices. Hook execution, trust, and git configuration are
+/// enforcement state, so they have no agent-safe edits.
+pub fn safe_change(kind: Kind, before: Option<&str>, after: Option<&str>) -> bool {
+    if before == after {
+        return true;
+    }
     match kind {
         Kind::Claude => {
             let old = before.and_then(|text| serde_json::from_str::<Value>(text).ok());
             let new = after.and_then(|text| serde_json::from_str::<Value>(text).ok());
-            match (old, new) {
-                (Some(old), Some(new)) => {
-                    let old_disabled = old.get("disableAllHooks") == Some(&Value::Bool(true));
-                    let new_disabled = new.get("disableAllHooks") == Some(&Value::Bool(true));
-                    new_disabled && !old_disabled || permission_hooks(&new) > permission_hooks(&old)
-                }
-                (Some(_), None) => true,
-                (None, _) => {
-                    count(after, "disableAllHooks") > count(before, "disableAllHooks")
-                        || count(after, "PermissionRequest") > count(before, "PermissionRequest")
-                }
+            let (Some(mut old), Some(mut new)) = (old, new) else {
+                return false;
+            };
+            let old_permissions = old.get("permissions").cloned();
+            let new_permissions = new.get("permissions").cloned();
+            if old_permissions == new_permissions {
+                return false;
+            }
+            if let (Some(old), Some(new)) = (old.as_object_mut(), new.as_object_mut()) {
+                old.remove("permissions");
+                new.remove("permissions");
+                old == new
+            } else {
+                false
             }
         }
-        Kind::Codex => {
-            let off = |text| settings(text, &["hooks", "codex_hooks"], "false");
-            let trusted = |text| settings(text, &["trust_level"], "trusted");
-            // Codex runs a project hook only while its reviewed hash is recorded here.
-            off(after) > off(before)
-                || trusted(after) < trusted(before)
-                || count(after, "trusted_hash") < count(before, "trusted_hash")
-        }
-        Kind::Git => {
-            let lower = |text: Option<&str>| text.map(str::to_ascii_lowercase);
-            count(lower(after).as_deref(), "hookspath")
-                != count(lower(before).as_deref(), "hookspath")
-        }
-    }
-}
-
-fn permission_hooks(value: &Value) -> usize {
-    match value {
-        Value::Object(object) => object
-            .iter()
-            .map(|(key, value)| {
-                if key == "PermissionRequest" {
-                    hooks(value)
-                } else {
-                    permission_hooks(value)
-                }
-            })
-            .sum(),
-        Value::Array(values) => values.iter().map(permission_hooks).sum(),
-        _ => 0,
-    }
-}
-
-fn hooks(value: &Value) -> usize {
-    match value {
-        Value::Object(object) => object
-            .iter()
-            .map(|(key, value)| {
-                if key == "hooks" {
-                    value.as_array().map_or(0, Vec::len)
-                } else {
-                    hooks(value)
-                }
-            })
-            .sum(),
-        Value::Array(values) => values.iter().map(hooks).sum(),
-        _ => 0,
+        Kind::Codex | Kind::Git => false,
     }
 }
 

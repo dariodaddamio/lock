@@ -19,6 +19,8 @@ lock covers and what it does not.
 - Codex lets a call through when its hook fails, when `lock` is not installed, or
   when the hooks changed and you have not reviewed them yet. The commit check and
   CI still catch the change.
+- Codex has no event for a failed tool call, so a Codex command that fails is
+  checked when the agent's turn ends instead of right after it runs.
 - An agent without hooks is not checked when it edits. Its change cannot be
   committed without your approval.
 - `git commit --no-verify` run by a person, or in a clone where nobody ran
@@ -47,7 +49,9 @@ you have not committed yet, as with any other file. While a merge or a rebase
 stops on a conflict, `lock` does not undo changes, and the commit hook checks the
 result.
 
-Approval in the Claude Code chat trusts Claude Code's edit prompt. A
+Approval in the Claude Code chat trusts Claude Code's edit prompt. Auto permission
+mode is not an approval path because a classifier could answer the prompt without
+showing it to you. A
 `PermissionRequest` hook or a permission callback could answer that prompt without
 you, so `lock` refuses the edit instead of asking when it finds such a hook in your
 Claude Code settings or plugins, and agents cannot add one.

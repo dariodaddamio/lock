@@ -91,7 +91,7 @@ pub enum View {
 impl View {
     /// Paths that mention `LOCKED:`, found with `git grep` so large repositories stay fast.
     pub fn marked(&self, root: &Path) -> Result<Vec<String>, String> {
-        let mut args = vec!["grep", "-l", "-I", "-z", "-F", "-e", "LOCKED:"];
+        let mut args = vec!["grep", "-l", "-z", "-F", "-e", "LOCKED:"];
         match self {
             View::Worktree => args.push("--untracked"),
             View::Index => args.push("--cached"),
@@ -105,7 +105,7 @@ impl View {
             Err(error) if error.is_empty() => Vec::new(),
             Err(error) => return Err(error),
         };
-        Ok(match self {
+        let mut found = match self {
             View::Commit(rev) => found
                 .into_iter()
                 .map(|line| {
@@ -115,7 +115,24 @@ impl View {
                 })
                 .collect::<Vec<_>>(),
             _ => found,
-        })
+        };
+        found.sort();
+        found.dedup();
+        Ok(found)
+    }
+
+    /// Paths that mention `LOCKED:` in the worktree, the index, or HEAD. Shell snapshots
+    /// use this, because a command can change attributes or ignore rules, and those must
+    /// not decide which files are protected.
+    pub fn marked_anywhere(root: &Path) -> Result<Vec<String>, String> {
+        let mut found = View::Worktree.marked(root)?;
+        found.extend(View::Index.marked(root)?);
+        if git(root, &["rev-parse", "--verify", "--quiet", "HEAD"]).is_ok() {
+            found.extend(View::Commit("HEAD".into()).marked(root)?);
+        }
+        found.sort();
+        found.dedup();
+        Ok(found)
     }
 
     fn files(&self, root: &Path, dir: &str) -> Result<Vec<String>, String> {
@@ -316,7 +333,7 @@ fn locks_in(root: &Path, view: &View, paths: &[String], whole: &[String]) -> Res
                 },
             );
         }
-        // Binary files hold no markers, as with `git grep -I`.
+        // Binary files hold no text markers. Whole-file locks still work above.
         let Some(bytes) = bytes.filter(|bytes| !bytes.contains(&0)) else {
             continue;
         };
@@ -540,6 +557,17 @@ pub fn find_root(start: &Path) -> Option<PathBuf> {
         .ancestors()
         .find(|dir| dir.join(".git").exists())
         .map(Path::to_path_buf)
+}
+
+/// Every enclosing repository root, nearest first. Nested repositories and
+/// submodules each get a chance to enforce a target that lies within them.
+pub fn enclosing_roots(start: &Path) -> Vec<PathBuf> {
+    let start = fs::canonicalize(start).unwrap_or_else(|_| start.to_path_buf());
+    start
+        .ancestors()
+        .filter(|dir| dir.join(".git").exists())
+        .map(Path::to_path_buf)
+        .collect()
 }
 
 /// The git directory for a root, following the `gitdir:` file that worktrees use.
