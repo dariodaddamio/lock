@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Known read-only tools (Read, Grep, Glob, and the other exact names on the safe
+  list) pass without a snapshot again. That restores the speed the README describes,
+  and stops a parallel Read from putting an in-chat approved edit back before the
+  edit's own PostToolUse can record it (#7).
+- While an in-chat approval ticket is still open, settle does not put that region
+  back, so an unknown or MCP tool that did take a snapshot cannot undo the yes (#7).
+- In-chat approval records the disk approval before it drops the open ticket, so a
+  parallel settle cannot hit a gap with neither protection (#7).
+- Snapshots copy only locked files that differ from the commit recorded at
+  PreToolUse; files that still match that commit are read from git instead (#7).
+- A UTF-8 byte-order mark before a line-1 marker no longer hides `START` (#8).
+- `lock check`, `lock doctor`, and the agent hook warn when `LOCKED:` appears in a
+  file type that cannot hold markers, because those markers lock nothing (#8).
+- The Limits section documents the cases lock does not stop, including changes
+  between tool calls, `git push` from an agent command, a faked terminal for
+  `lock approve`, and a host or worktree without hooks (#9).
+- Documentation is published as a GitHub Pages site from `docs/`.
+
 - `lock approve` has a clearer screen. Each change starts with a header that names
   the file, the kind of lock, where the change came from, and how many lines it
   touches. You answer one question with `y` (or `yes` or `approve`, in any case), `n` or

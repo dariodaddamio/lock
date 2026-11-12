@@ -51,6 +51,45 @@ const SHELL_TOOLS: [&str; 9] = [
 const EDIT_WORDS: [&str; 9] = [
     "edit", "write", "patch", "replace", "delete", "remove", "move", "rename", "create",
 ];
+/// Tools that only read, plan, or talk. Exact names only, so `x.read` is not treated as
+/// a read. These pass without a snapshot, because a snapshot of every locked file on
+/// each Read costs time and can race with an approved edit.
+const SAFE_TOOLS: [&str; 34] = [
+    "read",
+    "read_file",
+    "grep",
+    "glob",
+    "ls",
+    "list_dir",
+    "listdir",
+    "file_search",
+    "filesearch",
+    "codebase_search",
+    "semanticsearch",
+    "webfetch",
+    "web_fetch",
+    "websearch",
+    "web_search",
+    "todowrite",
+    "todo_write",
+    "update_plan",
+    "task",
+    "agent",
+    "askuserquestion",
+    "exitplanmode",
+    "enterplanmode",
+    "skill",
+    "toolsearch",
+    "view_image",
+    "bashoutput",
+    "taskoutput",
+    "notebookread",
+    "killshell",
+    "taskstop",
+    "sendmessage",
+    "listagents",
+    "read_lints",
+];
 
 /// What the hook answers.
 pub enum Outcome {
@@ -287,18 +326,23 @@ pub(crate) fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
             return Ok(Outcome::Deny(reasons(&refusals)));
         }
         let key = shell_key(&command, call);
+        warn_unsupported(&root);
         watch::before(&root, session, &key, background)?;
+        return Ok(Outcome::Allow);
+    } else if SAFE_TOOLS.contains(&tool.as_str()) {
         return Ok(Outcome::Allow);
     } else if EDIT_WORDS.iter().any(|word| tool.contains(word)) {
         let changes = proposals(&root, &cwd, &tool, input, payload)?;
         if changes.is_empty() {
             // A tool that lock cannot read, such as an MCP tool, is checked by what it
             // changed.
+            warn_unsupported(&root);
             watch::before(&root, session, &other_key(&tool, call, input), false)?;
             return Ok(Outcome::Allow);
         }
         changes
     } else {
+        warn_unsupported(&root);
         watch::before(&root, session, &other_key(&tool, call, input), false)?;
         return Ok(Outcome::Allow);
     };
@@ -350,6 +394,19 @@ fn reasons(refusals: &[Refusal]) -> String {
         .map(|refusal| refusal.reason.as_str())
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// Warns when `LOCKED:` appears in a file type that cannot hold markers, so a person
+/// does not believe a region is locked when it is not.
+fn warn_unsupported(root: &Path) {
+    match crate::repo::unsupported_markers(root) {
+        Ok(paths) if !paths.is_empty() => eprintln!(
+            "lock: warning: LOCKED: in unsupported file type{} (locks nothing): {}. Use a supported comment syntax, or lock the whole file in .locks/files.json.",
+            if paths.len() == 1 { "" } else { "s" },
+            paths.join(", ")
+        ),
+        _ => {}
+    }
 }
 
 /// The key that ties the check before a tool call to the check after it.

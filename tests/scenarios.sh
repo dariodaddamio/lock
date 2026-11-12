@@ -2,6 +2,7 @@
 # Scenario checks: runs the lock binary against hook payloads and git states in a throwaway repository.
 set -u
 LOCK="${LOCK:?set LOCK to the lock binary}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export PATH="$(cd "$(dirname "$LOCK")" && pwd):$PATH"
 WORK="$(mktemp -d)"
 # The person's own Claude Code settings must not change what the scenarios expect.
@@ -464,6 +465,65 @@ check "packed HEAD is read without git" '[ -z "$out" ]'
 rm -f tools/head-read.sh tools/head-read-packed.sh
 
 expect "a delete tool is refused up front on a locked file" deny "$(j '{"cwd":"ROOT","tool_name":"Delete","tool_input":{"file_path":"ROOT/CHANGELOG.md"}}')"
+
+# Read-only tools pass without a snapshot, and must not undo an in-chat approval.
+reset_tagline() {
+  cat > src/app.ts <<'EOF'
+export const free = 1;
+/* LOCKED: tagline START */
+export const tagline = "Pay for what you ship.";
+/* LOCKED: tagline END */
+EOF
+  rm -f .locks/approvals/*.json 2>/dev/null || true
+  rm -rf "$(git rev-parse --git-dir)/lock/asked" "$(git rev-parse --git-dir)/lock/refused" "$(git rev-parse --git-dir)/lock/pending" "$(git rev-parse --git-dir)/lock/runs" 2>/dev/null || true
+  git add src/app.ts .locks
+  git commit -qm "$1" --no-verify
+}
+reset_tagline "reset for read race"
+read_tool() { printf '{"cwd":"%s","session_id":"s-read","permission_mode":"default","hook_event_name":"%s","tool_use_id":"%s","tool_name":"Read","tool_input":{"file_path":"%s/src/app.ts"}}' "$ROOT" "$1" "$2" "$ROOT" | "$LOCK" hook claude; }
+ask_edit() { printf '{"cwd":"%s","session_id":"s-read","permission_mode":"default","hook_event_name":"%s","tool_use_id":"%s","tool_name":"Edit","tool_input":{"file_path":"%s/src/app.ts","old_string":"Pay for what you ship.","new_string":"Read race."}}' "$ROOT" "$1" "$2" "$ROOT" | "$LOCK" hook claude; }
+read_tool PreToolUse r1 >/dev/null
+ask_edit PreToolUse e1 >/dev/null
+out="$(ask_edit PreToolUse e1)"
+check "read race: second edit asks" 'case "$out" in *\"ask\"*) true;; *) false;; esac'
+edit 's/Pay for what you ship\./Read race./' src/app.ts
+out="$(read_tool PostToolUse r1)"
+check "read race: Read PostToolUse leaves the approved edit" 'grep -q "Read race." src/app.ts && [ -z "$out" ]'
+out="$(ask_edit PostToolUse e1)"
+check "read race: Edit PostToolUse still records the approval" 'case "$out" in *approved*) true;; *) false;; esac && "$LOCK" check >/dev/null'
+
+# An unknown tool that does snapshot must not undo an open in-chat yes either.
+reset_tagline "reset for probe race"
+probe() { printf '{"cwd":"%s","session_id":"s-probe","permission_mode":"default","hook_event_name":"%s","tool_use_id":"%s","tool_name":"mcp__files__probe","tool_input":{}}' "$ROOT" "$1" "$2" | "$LOCK" hook claude; }
+ask_edit2() { printf '{"cwd":"%s","session_id":"s-probe","permission_mode":"default","hook_event_name":"%s","tool_use_id":"%s","tool_name":"Edit","tool_input":{"file_path":"%s/src/app.ts","old_string":"Pay for what you ship.","new_string":"Probe race."}}' "$ROOT" "$1" "$2" "$ROOT" | "$LOCK" hook claude; }
+probe PreToolUse p1 >/dev/null
+ask_edit2 PreToolUse e2 >/dev/null
+ask_edit2 PreToolUse e2 >/dev/null
+edit 's/Pay for what you ship\./Probe race./' src/app.ts
+out="$(probe PostToolUse p1)"
+check "probe race: open ticket keeps the approved edit" 'grep -q "Probe race." src/app.ts'
+out="$(ask_edit2 PostToolUse e2)"
+check "probe race: Edit PostToolUse records after the probe" 'case "$out" in *approved*) true;; *) false;; esac'
+
+# Unsupported markers warn; a UTF-8 BOM does not hide a line-1 marker.
+reset_tagline "reset before marker warnings"
+printf '# LOCKED: ghost START\nFROM scratch\n# LOCKED: ghost END\n' > Dockerfile
+git add Dockerfile
+git commit -q -m "add dockerfile" --no-verify
+err="$("$LOCK" check 2>&1 >/dev/null)"
+check "unsupported Dockerfile markers warn on check" 'case "$err" in *unsupported*"Dockerfile"*) true;; *) false;; esac'
+doc="$("$LOCK" doctor 2>&1)"
+check "unsupported Dockerfile markers warn on doctor" 'case "$doc" in *WARN*"Dockerfile"*) true;; *) false;; esac'
+git rm -qf Dockerfile
+git commit -q -m "drop dockerfile" --no-verify
+# Real UTF-8 BOM bytes from a fixture (Git Bash printf escapes are not portable here).
+cp "$SCRIPT_DIR/fixtures/bom.ts" src/bom.ts
+git add src/bom.ts
+git commit -q -m "bom" --no-verify
+listed="$("$LOCK" list)"
+check "BOM before a line-1 marker still lists the lock" 'case "$listed" in *"src/bom.ts :: bom"*) true;; *) false;; esac'
+git rm -qf src/bom.ts
+git commit -q -m "drop bom" --no-verify
 
 # On a failure, show the agent settings, which several checks depend on.
 [ "$fail" -eq 0 ] || { echo "--- .claude/settings.json"; cat .claude/settings.json; }

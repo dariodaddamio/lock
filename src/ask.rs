@@ -223,7 +223,6 @@ pub fn confirm(root: &Path, call: &str) -> Result<Option<String>, String> {
     let Ok(bytes) = fs::read(&file) else {
         return Ok(None);
     };
-    let _ = fs::remove_file(&file);
     let record: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
     let mut recorded = Vec::new();
     for ask in record
@@ -240,6 +239,8 @@ pub fn confirm(root: &Path, call: &str) -> Result<Option<String>, String> {
         if state(root, path, id).as_deref() != after {
             continue;
         }
+        // Record the approval before dropping the ticket. A parallel settle must not
+        // see a gap where neither the open ticket nor a disk approval protects the edit.
         let saved = approve::record(
             root,
             path,
@@ -252,6 +253,8 @@ pub fn confirm(root: &Path, call: &str) -> Result<Option<String>, String> {
         pending::forget(root, path, id, after);
         recorded.push(saved);
     }
+    // Drop the ticket only after approvals are on disk (or none matched).
+    let _ = fs::remove_file(&file);
     if recorded.is_empty() {
         return Ok(None);
     }
@@ -259,6 +262,35 @@ pub fn confirm(root: &Path, call: &str) -> Result<Option<String>, String> {
         "lock: the user approved this change in the permission prompt, and lock recorded it in {}. Commit the record together with the change.",
         recorded.join(", ")
     )))
+}
+
+/// Whether an open in-chat approval ticket expects this lock to end in `after`.
+/// A parallel Read or other tool must not put the region back while that yes is still
+/// landing, or the edit's own PostToolUse would find nothing to record.
+pub fn expecting(root: &Path, path: &str, id: &str, after: Option<&str>) -> bool {
+    let Ok(entries) = fs::read_dir(tickets(root)) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let Ok(bytes) = fs::read(entry.path()) else {
+            continue;
+        };
+        let Ok(record) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        for ask in record
+            .get("asks")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let text = |key: &str| ask.get(key).and_then(Value::as_str);
+            if text("path") == Some(path) && text("id") == Some(id) && text("after") == after {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Removes the tickets of a turn that ended, and stale tickets and marks. A ticket

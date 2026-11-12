@@ -415,6 +415,7 @@ pub(crate) fn checks(start: &Path) -> Vec<Check> {
     list.push(locks_dir_check(&root));
     let (locks, found) = locks_check(&root);
     list.push(locks);
+    list.push(unsupported_markers_check(&root));
     list.push(match found {
         Some(found) => canary_check(&root, &found),
         None => Check::warn(
@@ -423,6 +424,26 @@ pub(crate) fn checks(start: &Path) -> Vec<Check> {
         ),
     });
     list
+}
+
+fn unsupported_markers_check(root: &Path) -> Check {
+    match repo::unsupported_markers(root) {
+        Ok(paths) if paths.is_empty() => {
+            Check::pass("No LOCKED: markers in unsupported file types")
+        }
+        Ok(paths) => Check::warn(
+            format!(
+                "LOCKED: in unsupported file type{} (locks nothing): {}",
+                if paths.len() == 1 { "" } else { "s" },
+                paths.join(", ")
+            ),
+            "Use a supported comment syntax, or lock the whole file in .locks/files.json.",
+        ),
+        Err(error) => Check::warn(
+            format!("Could not scan for unsupported LOCKED: markers: {error}"),
+            "Fix the repository state, then run lock doctor again.",
+        ),
+    }
 }
 
 pub fn run() -> Result<i32, String> {
