@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.3 - November 12, 2026
 
 - An edit tool can no longer replace the commit hook or write lock's own state.
   Before, an agent could use Write to turn `.git/hooks/pre-commit` into `exit 0`, and
