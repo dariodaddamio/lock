@@ -1,9 +1,6 @@
 ---
 title: Lock markers
-nav_order: 6
 ---
-
-# Lock markers
 
 Your agent writes the markers, so you do not need to learn them. This section is
 for reference.
