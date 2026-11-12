@@ -21,7 +21,7 @@
   snapshots) in each (GHSA-4wh2-7r58-rg32).
 - A hook that hangs now blocks the tool call instead of letting it run. Hosts treat
   a hook that times out as a non-blocking error, so a hung `git` call failed open.
-  A 20-second watchdog now answers with a refusal before the host gives up. It is
+  A 50-second watchdog now answers with a refusal before the host gives up. It is
   armed only before a tool runs, where refusing is safe and nothing has been put
   back yet (GHSA-8fjv-27gv-5754).
 - A `.gitattributes` change can no longer hide locked files from the shell check.

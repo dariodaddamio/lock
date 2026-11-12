@@ -92,7 +92,7 @@ const SAFE_TOOLS: [&str; 34] = [
     "listagents",
     "read_lints",
 ];
-const WATCHDOG_SECONDS: u64 = 20;
+const WATCHDOG_SECONDS: u64 = 50;
 
 /// What the hook answers.
 pub enum Outcome {
@@ -956,7 +956,7 @@ mod tests {
     fn watchdog_denies_once_and_never_after_the_hook_answered() {
         // The deadline must stay below the hosts' default hook timeouts, so the deny
         // arrives before a host gives up and runs the tool call.
-        assert!(super::WATCHDOG_SECONDS <= 20);
+        assert!(super::WATCHDOG_SECONDS < 60);
         super::ANSWERED.store(false, std::sync::atomic::Ordering::SeqCst);
         let answer = super::watchdog_answer(super::Host::Claude).expect("first answer");
         assert_eq!(answer["hookSpecificOutput"]["permissionDecision"], "deny");

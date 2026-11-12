@@ -100,7 +100,7 @@ These runners are shared machines, so a number can move by a third from one run
 to the next. To measure your own machine, run
 `python3 tests/bench.py <path to lock>`.
 
-A check that takes longer than 20 seconds is treated like any other error, and
+A check that takes longer than 50 seconds is treated like any other error, and
 the tool call is blocked, because a host that waits too long for a hook runs the
 call anyway.
 

@@ -54,10 +54,16 @@ def time_run(args, payload, cwd):
     return (time.perf_counter() - start) * 1000
 
 
-def measure(args, payload, cwd):
+def measure(args, payload, cwd, reset=None):
+    """`reset` runs untimed before each sample, the way a host follows each
+    PreToolUse with a PostToolUse, so each sample starts from the same state."""
+    def sample():
+        if reset is not None:
+            time_run(args, reset, cwd)
+        return time_run(args, payload, cwd)
     for _ in range(3):
-        time_run(args, payload, cwd)
-    samples = sorted(time_run(args, payload, cwd) for _ in range(RUNS))
+        sample()
+    samples = sorted(sample() for _ in range(RUNS))
     return statistics.median(samples), samples[int(len(samples) * 0.95) - 1]
 
 
@@ -83,7 +89,7 @@ def cases(repo):
          edit(repo, locked, "line5 = 5;", "line5 = 6;")),
         ("Edit inside a locked region (refused)", hook,
          edit(repo, locked, "Pay for what you ship.", "Ship faster.")),
-        ("Before a shell command", hook, shell(repo, "PreToolUse")),
+        ("Before a shell command", hook, shell(repo, "PreToolUse"), shell(repo, "PostToolUse")),
         ("After a shell command", hook, shell(repo, "PostToolUse")),
         ("Commit check", [LOCK, "check", "--staged", "--record"], None),
     ]
@@ -100,7 +106,7 @@ def main():
         root = tempfile.mkdtemp(prefix="lock-bench-")
         try:
             repo = build(root, files, locks)
-            for name, args, payload in cases(repo):
+            for name, args, payload, *reset in cases(repo):
                 if name not in names:
                     names.append(name)
                 if name == "After a shell command":
@@ -113,7 +119,7 @@ def main():
                     results[(name, label)] = (statistics.median(samples),
                                               samples[int(len(samples) * 0.95) - 1])
                 else:
-                    results[(name, label)] = measure(args, payload, repo)
+                    results[(name, label)] = measure(args, payload, repo, *reset)
         finally:
             # git marks its object files read-only, which stops a plain delete on Windows.
             for folder, _, files in os.walk(root):
