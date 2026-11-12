@@ -160,7 +160,15 @@ fn commit_hook_check(root: &Path) -> Check {
 /// The events that each agent's hook file must run lock for.
 fn required_events(file: &str) -> &'static [&'static str] {
     if file.starts_with(".cursor") {
-        &["preToolUse", "beforeShellExecution", "postToolUse", "stop"]
+        &[
+            "preToolUse",
+            "beforeShellExecution",
+            "postToolUse",
+            "postToolUseFailure",
+            "stop",
+        ]
+    } else if file.starts_with(".claude") {
+        &["PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop"]
     } else {
         &["PreToolUse", "PostToolUse", "Stop"]
     }

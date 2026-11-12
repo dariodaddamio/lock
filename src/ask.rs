@@ -23,7 +23,7 @@ pub struct Ask {
 
 /// Permission modes in which Claude Code shows a hook's question to the person. In
 /// `bypassPermissions` the prompt is skipped and in `dontAsk` it is denied.
-const PROMPTING: [&str; 3] = ["default", "acceptEdits", "auto"];
+const PROMPTING: [&str; 2] = ["default", "acceptEdits"];
 const STALE_SECONDS: u64 = 6 * 60 * 60;
 
 fn tickets(root: &Path) -> PathBuf {

@@ -9,13 +9,15 @@ use crate::ask::{self, Ask};
 use crate::paths::{eq, relative, under};
 use crate::regions::{hash, regions, supports_markers};
 use crate::repo::{
-    APPROVALS, FILE_LOCKS, WHOLE_FILE, approved, disk_approvals, find_root, parse_file_locks,
+    APPROVALS, FILE_LOCKS, WHOLE_FILE, approved, disk_approvals, enclosing_roots, find_root,
+    git_dir, parse_file_locks,
 };
 use crate::{guard, patch, pending, shell, watch};
 use serde_json::{Value, json};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Claude Code and Codex share the `PreToolUse` output contract. Only Claude Code
 /// shows a hook's question to the person.
@@ -90,6 +92,7 @@ const SAFE_TOOLS: [&str; 34] = [
     "listagents",
     "read_lints",
 ];
+const WATCHDOG_SECONDS: u64 = 20;
 
 /// What the hook answers.
 pub enum Outcome {
@@ -113,10 +116,19 @@ pub fn run(host: Host) -> i32 {
         .read_to_string(&mut input)
         .map_err(|error| format!("could not read the hook input: {error}"))
         .and_then(|_| {
-            serde_json::from_str::<Value>(&input)
-                .map_err(|_| "the hook input is not JSON".to_string())
-        })
-        .and_then(|payload| decide(host, &payload));
+            let payload = serde_json::from_str::<Value>(&input)
+                .map_err(|_| "the hook input is not JSON".to_string())?;
+            if is_pre_event(&payload) {
+                watchdog(host);
+            }
+            decide(host, &payload)
+        });
+    if !claim_answer() {
+        // The watchdog is answering and will end the process.
+        loop {
+            std::thread::park();
+        }
+    }
     match decision {
         Ok(Outcome::Allow) => {
             if let Host::Cursor = host {
@@ -172,6 +184,45 @@ pub fn run(host: Host) -> i32 {
             2
         }
     }
+}
+
+fn is_pre_event(payload: &Value) -> bool {
+    matches!(
+        text(payload, &["hook_event_name", "hookEventName"])
+            .unwrap_or("PreToolUse")
+            .to_ascii_lowercase()
+            .as_str(),
+        "pretooluse" | "beforeshellexecution" | "beforemcpexecution"
+    )
+}
+
+/// Set by whichever answers first, the hook or its watchdog, so the host never gets two
+/// answers for one tool call.
+static ANSWERED: AtomicBool = AtomicBool::new(false);
+
+/// Claims the right to answer. Returns false when the other side already answered.
+fn claim_answer() -> bool {
+    !ANSWERED.swap(true, Ordering::SeqCst)
+}
+
+/// A hang must fail closed like any other error: the hosts treat a hook that times out
+/// as a non-blocking error and run the tool call. The watchdog is armed only before a
+/// tool runs, where denying is safe and nothing has been put back yet.
+fn watchdog(host: Host) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(WATCHDOG_SECONDS));
+        if let Some(answer) = watchdog_answer(host) {
+            println!("{answer}");
+            eprintln!("{WATCHDOG_REASON}");
+            std::process::exit(2);
+        }
+    });
+}
+
+const WATCHDOG_REASON: &str = "lock took too long to check this tool call, so it was blocked";
+
+fn watchdog_answer(host: Host) -> Option<Value> {
+    claim_answer().then(|| format_message(host, "deny", WATCHDOG_REASON))
 }
 
 pub(crate) fn format_message(host: Host, kind: &str, message: &str) -> Value {
@@ -233,9 +284,56 @@ pub(crate) fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
         })
         .or_else(|| std::env::current_dir().ok())
         .ok_or("no working directory")?;
-    let Some(root) = find_root(&cwd) else {
+    let mut roots = enclosing_roots(&cwd);
+    let target = payload
+        .get("tool_input")
+        .or_else(|| payload.get("arguments"))
+        .and_then(|input| {
+            text(
+                input,
+                &[
+                    "file_path",
+                    "filePath",
+                    "path",
+                    "target_file",
+                    "targetFile",
+                    "notebook_path",
+                ],
+            )
+            .or_else(|| {
+                text(
+                    payload,
+                    &[
+                        "file_path",
+                        "filePath",
+                        "path",
+                        "target_file",
+                        "targetFile",
+                        "notebook_path",
+                    ],
+                )
+            })
+        });
+    if let Some(target) = target {
+        let full = if Path::new(target).is_absolute() {
+            PathBuf::from(target)
+        } else {
+            cwd.join(target)
+        };
+        roots.extend(enclosing_roots(full.parent().unwrap_or(&full)));
+    }
+    let mut unique = Vec::new();
+    for root in roots {
+        let canonical = fs::canonicalize(&root).unwrap_or(root.clone());
+        if !unique.iter().any(|seen: &PathBuf| seen == &canonical) {
+            unique.push(canonical);
+        }
+    }
+    roots = unique;
+    let Some(root) = roots.first().cloned().or_else(|| find_root(&cwd)) else {
         return Ok(Outcome::Allow);
     };
+    let protected = protected_dirs(&root);
     let event = text(payload, &["hook_event_name", "hookEventName"])
         .unwrap_or("PreToolUse")
         .to_ascii_lowercase();
@@ -258,15 +356,22 @@ pub(crate) fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
         "stop" | "sessionend" => {
             // A command that runs in the background may still change files after it
             // reported back, so lock checks it when the turn ends.
-            let message = watch::settle_background(&root, session);
-            watch::prune(&root, Some(session));
-            ask::prune(&root, session);
-            return Ok(match message {
-                Ok(Some(message)) => Outcome::Notice(message),
-                Ok(None) => Outcome::Quiet,
-                Err(error) => Outcome::Notice(format!(
-                    "lock could not check what a background command changed: {error}. Run `lock check`."
-                )),
+            let mut messages = Vec::new();
+            for candidate in &roots {
+                match watch::settle_background(candidate, session) {
+                    Ok(Some(message)) => messages.push(message),
+                    Ok(None) => {}
+                    Err(error) => messages.push(format!(
+                        "lock could not check what a background command changed: {error}. Run `lock check`."
+                    )),
+                }
+                watch::prune(candidate, Some(session));
+                ask::prune(candidate, session);
+            }
+            return Ok(if messages.is_empty() {
+                Outcome::Quiet
+            } else {
+                Outcome::Notice(messages.join("\n\n"))
             });
         }
         // Cursor sends both events after a command. Only `postToolUse` can pass a
@@ -294,13 +399,38 @@ pub(crate) fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
                 None => other_key(&tool, call, input),
             };
             // The call already ran, so an error here cannot block it; it is reported.
-            return Ok(match watch::after(&root, session, &key) {
-                Ok(None) => Outcome::Quiet,
-                Ok(Some(message)) => Outcome::Report(message),
-                Err(error) => Outcome::Report(format!(
-                    "lock could not check what this command changed: {error}. Ask the user to run `lock check`."
-                )),
-            });
+            let mut messages = Vec::new();
+            for candidate in &roots {
+                match watch::after(candidate, session, &key) {
+                    Ok(Some(message)) => messages.push(message),
+                    Ok(None) => {}
+                    Err(error) => messages.push(format!(
+                        "lock could not check what this command changed: {error}. Ask the user to run `lock check`."
+                    )),
+                }
+            }
+            return Ok(messages
+                .first()
+                .map_or(Outcome::Quiet, |_| Outcome::Report(messages.join("\n\n"))));
+        }
+        "posttoolusefailure" | "aftershellexecutionfailure" => {
+            let key = match command.filter(|_| is_shell) {
+                Some(command) => shell_key(&command, call),
+                None => other_key(&tool, call, input),
+            };
+            let mut messages = Vec::new();
+            for candidate in &roots {
+                match watch::after(candidate, session, &key) {
+                    Ok(Some(message)) => messages.push(message),
+                    Ok(None) => {}
+                    Err(error) => messages.push(format!(
+                        "lock could not check what this command changed: {error}. Ask the user to run `lock approve`."
+                    )),
+                }
+            }
+            return Ok(messages
+                .first()
+                .map_or(Outcome::Quiet, |_| Outcome::Report(messages.join("\n\n"))));
         }
         _ => {}
     }
@@ -312,27 +442,35 @@ pub(crate) fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
         if let Some(reason) = shell::denial(&command) {
             return Ok(Outcome::Deny(reason));
         }
-        // Codex can also run `apply_patch` through the shell with the patch inline.
-        let changes = match command.find("*** Begin Patch") {
-            Some(start) => {
+        let mut refusals = Vec::new();
+        for candidate in &roots {
+            let protected = protected_dirs(candidate);
+            let candidate_changes = if command.find("*** Begin Patch").is_some() {
+                let start = command.find("*** Begin Patch").unwrap();
                 let body = &command[start..];
                 let end = body.find("*** End Patch").map_or(body.len(), |at| at + 13);
-                patch_changes(&root, &cwd, &body[..end])
-            }
-            None => Vec::new(),
-        };
-        let refusals = judge_all(&root, &changes)?;
+                patch_changes(candidate, &cwd, &body[..end])
+            } else {
+                Vec::new()
+            };
+            refusals.extend(judge_all(candidate, &protected, &candidate_changes)?);
+        }
         if !refusals.is_empty() {
             return Ok(Outcome::Deny(reasons(&refusals)));
         }
         let key = shell_key(&command, call);
-        warn_unsupported(&root);
-        watch::before(&root, session, &key, background)?;
+        for candidate in &roots {
+            warn_unsupported(candidate);
+            watch::before(candidate, session, &key, background)?;
+        }
         return Ok(Outcome::Allow);
     } else if SAFE_TOOLS.contains(&tool.as_str()) {
         return Ok(Outcome::Allow);
     } else if EDIT_WORDS.iter().any(|word| tool.contains(word)) {
-        let changes = proposals(&root, &cwd, &tool, input, payload)?;
+        let changes = proposals(&root, &protected, &cwd, &tool, input, payload)?;
+        if roots.len() > 1 {
+            return decide_nested_edit(host, payload, &cwd, &tool, input, &roots);
+        }
         if changes.is_empty() {
             // A tool that lock cannot read, such as an MCP tool, is checked by what it
             // changed.
@@ -342,11 +480,13 @@ pub(crate) fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
         }
         changes
     } else {
-        warn_unsupported(&root);
-        watch::before(&root, session, &other_key(&tool, call, input), false)?;
+        for candidate in &roots {
+            warn_unsupported(candidate);
+            watch::before(candidate, session, &other_key(&tool, call, input), false)?;
+        }
         return Ok(Outcome::Allow);
     };
-    let refusals = judge_all(&root, &changes)?;
+    let refusals = judge_all(&root, &protected, &changes)?;
     if refusals.is_empty() {
         return Ok(Outcome::Allow);
     }
@@ -370,6 +510,77 @@ pub(crate) fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
         return Ok(Outcome::Ask(ask::question(&asks)));
     }
     Ok(Outcome::Deny(reasons(&refusals)))
+}
+
+fn decide_nested_edit(
+    host: Host,
+    payload: &Value,
+    cwd: &Path,
+    tool: &str,
+    input: &Value,
+    roots: &[PathBuf],
+) -> Result<Outcome, String> {
+    let mut refusals = Vec::new();
+    let mut snapshots = Vec::new();
+    for root in roots {
+        let protected = protected_dirs(root);
+        let changes = proposals(root, &protected, cwd, tool, input, payload)?;
+        if changes.is_empty() {
+            snapshots.push(root);
+        } else {
+            refusals.extend(
+                judge_all(root, &protected, &changes)?
+                    .into_iter()
+                    .map(|refusal| (root, refusal)),
+            );
+        }
+    }
+    if refusals.is_empty() {
+        if snapshots.is_empty() {
+            return Ok(Outcome::Allow);
+        }
+        let key = other_key(tool, text(payload, &["tool_use_id"]), input);
+        for root in snapshots {
+            warn_unsupported(root);
+            watch::before(
+                root,
+                text(payload, &["session_id", "conversation_id"]).unwrap_or_default(),
+                &key,
+                false,
+            )?;
+        }
+        return Ok(Outcome::Allow);
+    }
+
+    let askable = refusals.iter().all(|(_, refusal)| !refusal.asks.is_empty());
+    let all_reasons = refusals
+        .iter()
+        .map(|(_, refusal)| refusal.reason.clone())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let ask_root = refusals[0].0.clone();
+    let asks: Vec<Ask> = refusals
+        .into_iter()
+        .flat_map(|(_, refusal)| refusal.asks)
+        .collect();
+    if host == Host::Claude
+        && askable
+        && text(payload, &["tool_use_id"]).is_some()
+        && ask::possible(&ask_root, payload)
+    {
+        let session = text(payload, &["session_id", "conversation_id"]).unwrap_or_default();
+        if !ask::retried(&ask_root, session, &asks)? {
+            return Ok(Outcome::Deny(ask::first_refusal(&asks)));
+        }
+        ask::save(
+            &ask_root,
+            session,
+            text(payload, &["tool_use_id"]).unwrap(),
+            &asks,
+        )?;
+        return Ok(Outcome::Ask(ask::question(&asks)));
+    }
+    Ok(Outcome::Deny(all_reasons))
 }
 
 /// Why lock refuses a change in one file, and the locked changes in it that a person
@@ -421,10 +632,14 @@ fn shell_key(command: &str, call: Option<&str>) -> String {
     call.map_or_else(|| command.to_string(), |id| format!("{command}\n{id}"))
 }
 
-fn judge_all(root: &Path, changes: &[Change]) -> Result<Vec<Refusal>, String> {
+fn judge_all(
+    root: &Path,
+    protected: &[PathBuf],
+    changes: &[Change],
+) -> Result<Vec<Refusal>, String> {
     let mut refusals = Vec::new();
     for change in changes {
-        refusals.extend(judge(root, change)?);
+        refusals.extend(judge(root, protected, change)?);
     }
     Ok(refusals)
 }
@@ -451,6 +666,112 @@ fn read(root: &Path, path: &str) -> Option<String> {
     fs::read(root.join(path))
         .ok()
         .map(|bytes| normalized(&crate::regions::decode(&bytes).0))
+}
+
+fn canonical_existing(path: &Path) -> Option<PathBuf> {
+    let mut current = path;
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(found) = fs::canonicalize(current) {
+            return Some(
+                rest.iter()
+                    .rev()
+                    .fold(found, |path: PathBuf, part| path.join(part)),
+            );
+        }
+        let (Some(parent), Some(name)) = (current.parent(), current.file_name()) else {
+            return None;
+        };
+        rest.push(name.to_owned());
+        current = parent;
+    }
+}
+
+/// lock's own state and the directory git runs hooks from. No agent edit to these is
+/// legitimate.
+fn protected_dirs(root: &Path) -> Vec<PathBuf> {
+    let git = git_dir(root);
+    let common = common_dir(&git);
+    let mut dirs = vec![git.join("lock"), git.join("hooks"), common.join("hooks")];
+    // Asking git costs a process on every edit, so it is only asked when some config
+    // could move the hooks directory.
+    if config_may_set_hooks_path(&git, &common)
+        && let Ok(output) = crate::repo::git(root, &["rev-parse", "--git-path", "hooks"])
+        && let Ok(path) = String::from_utf8(output)
+    {
+        let path = PathBuf::from(path.trim());
+        dirs.push(if path.is_absolute() {
+            path
+        } else {
+            root.join(path)
+        });
+    }
+    dirs.into_iter()
+        .filter_map(|path| canonical_existing(&path))
+        .collect()
+}
+
+/// The shared git directory of a linked worktree, where its hooks live, or the git
+/// directory itself.
+fn common_dir(git: &Path) -> PathBuf {
+    match fs::read_to_string(git.join("commondir")) {
+        Ok(text) => {
+            let dir = PathBuf::from(text.trim());
+            if dir.is_absolute() {
+                dir
+            } else {
+                git.join(dir)
+            }
+        }
+        Err(_) => git.to_path_buf(),
+    }
+}
+
+/// Whether any config git reads could set `core.hooksPath`. It errs towards yes: a
+/// mention of `hookspath` or any include, an unreadable home, or config passed through
+/// the environment all count, and only then is git asked.
+fn config_may_set_hooks_path(git: &Path, common: &Path) -> bool {
+    if [
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+    ]
+    .iter()
+    .any(|name| std::env::var_os(name).is_some())
+    {
+        return true;
+    }
+    let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) else {
+        return true;
+    };
+    let home = PathBuf::from(home);
+    let xdg = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"));
+    let files = [
+        common.join("config"),
+        git.join("config.worktree"),
+        home.join(".gitconfig"),
+        xdg.join("git").join("config"),
+        PathBuf::from("/etc/gitconfig"),
+        PathBuf::from(r"C:\Program Files\Git\etc\gitconfig"),
+    ];
+    files.iter().any(|file| {
+        fs::read(file).is_ok_and(|bytes| {
+            let text = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
+            text.contains("hookspath") || text.contains("[include")
+        })
+    })
+}
+
+fn protected_target(root: &Path, protected: &[PathBuf], path: &str) -> bool {
+    let full = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        root.join(path)
+    };
+    canonical_existing(&full).is_some_and(|full| protected.iter().any(|dir| full.starts_with(dir)))
 }
 
 /// Applies one exact replacement the way the edit tools do. An edit that does not
@@ -551,6 +872,7 @@ fn patch_changes(root: &Path, cwd: &Path, patch: &str) -> Vec<Change> {
 
 fn proposals(
     root: &Path,
+    protected: &[PathBuf],
     cwd: &Path,
     tool: &str,
     input: &Value,
@@ -585,7 +907,9 @@ fn proposals(
         Some(path) => path,
         None => {
             let full = cwd.join(raw);
-            if guard::external_kind(&full).is_none() {
+            if guard::external_kind(&full).is_none()
+                && !protected_target(root, protected, &full.to_string_lossy())
+            {
                 return Ok(Vec::new());
             }
             full.to_string_lossy().into_owned()
@@ -626,6 +950,22 @@ fn proposals(
     }])
 }
 
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn watchdog_denies_once_and_never_after_the_hook_answered() {
+        // The deadline must stay below the hosts' default hook timeouts, so the deny
+        // arrives before a host gives up and runs the tool call.
+        assert!(super::WATCHDOG_SECONDS <= 20);
+        super::ANSWERED.store(false, std::sync::atomic::Ordering::SeqCst);
+        let answer = super::watchdog_answer(super::Host::Claude).expect("first answer");
+        assert_eq!(answer["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert!(super::watchdog_answer(super::Host::Claude).is_none());
+        assert!(!super::claim_answer());
+        super::ANSWERED.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 fn approve_hint(id: &str, path: &str) -> String {
     let target = if id == WHOLE_FILE { path } else { id };
     format!(
@@ -633,13 +973,19 @@ fn approve_hint(id: &str, path: &str) -> String {
     )
 }
 
-fn judge(root: &Path, change: &Change) -> Result<Option<Refusal>, String> {
+fn judge(root: &Path, protected: &[PathBuf], change: &Change) -> Result<Option<Refusal>, String> {
     let path = change.path.as_str();
     let before = change.before.as_deref();
     let after = match &change.after {
         After::Content(text) => Some(text.as_str()),
         _ => None,
     };
+
+    if protected_target(root, protected, path) {
+        return Ok(Refusal::hard(format!(
+            "lock: {path} is part of lock's enforcement surface. Agents cannot edit it. Ask the user."
+        )));
+    }
 
     // An agent's settings can sit inside the repository too, such as in a repository
     // of dotfiles, so the full path decides.
@@ -685,7 +1031,10 @@ fn judge(root: &Path, change: &Change) -> Result<Option<Refusal>, String> {
     }
 
     if HOOK_CONFIGS.iter().any(|config| eq(path, config)) {
-        if weakens_hooks(before.map(str::as_bytes), after.map(str::as_bytes)) {
+        let safe = eq(path, ".claude/settings.json")
+            && after
+                .is_some_and(|after| guard::safe_change(guard::Kind::Claude, before, Some(after)));
+        if !safe {
             return Ok(Refusal::hard(format!(
                 "lock: this edit to {path} would remove the lock hook, turn hooks off, or add a hook that answers permission prompts. Agents cannot do that. Ask the user."
             )));
@@ -795,62 +1144,4 @@ fn judge(root: &Path, change: &Change) -> Result<Option<Refusal>, String> {
         reason: format!("lock: {what} {}", approve_hint(&blocked[0].id, path)),
         asks: blocked,
     }))
-}
-
-/// The entries in an agent's hook settings that run lock, each as its JSON text, or
-/// `None` when the settings are not valid JSON.
-fn lock_entries(bytes: Option<&[u8]>) -> Option<Vec<String>> {
-    fn walk(value: &Value, found: &mut Vec<String>) {
-        match value {
-            Value::Array(items) => {
-                for item in items {
-                    if item.is_object() && item.to_string().contains("lock hook") {
-                        found.push(item.to_string());
-                    }
-                    walk(item, found);
-                }
-            }
-            Value::Object(map) => map.values().for_each(|value| walk(value, found)),
-            _ => {}
-        }
-    }
-    let Some(bytes) = bytes else {
-        return Some(Vec::new());
-    };
-    let value: Value = serde_json::from_slice(bytes).ok()?;
-    let mut found = Vec::new();
-    walk(&value, &mut found);
-    found.sort();
-    Some(found)
-}
-
-/// Whether a change to an agent's hook settings touches the lock hook, turns hooks off,
-/// or adds a hook that could answer lock's question in the permission prompt. Any
-/// change to the lock hook counts, because Codex stops running a hook that changed
-/// until a person reviews it again.
-pub fn weakens_hooks(before: Option<&[u8]>, after: Option<&[u8]>) -> bool {
-    let count = |text: Option<&[u8]>, needle: &str| {
-        text.map_or(0, |bytes| {
-            String::from_utf8_lossy(bytes).matches(needle).count()
-        })
-    };
-    let entries_changed = match (lock_entries(before), lock_entries(after)) {
-        (Some(old), Some(new)) => {
-            let mut left = new;
-            !old.iter()
-                .all(|entry| match left.iter().position(|item| item == entry) {
-                    Some(at) => {
-                        left.remove(at);
-                        true
-                    }
-                    None => false,
-                })
-        }
-        // Settings that no longer parse turn every hook in them off.
-        (Some(old), None) => !old.is_empty(),
-        (None, _) => count(after, "lock hook") < count(before, "lock hook"),
-    };
-    entries_changed
-        || count(after, "disableAllHooks") > count(before, "disableAllHooks")
-        || count(after, "PermissionRequest") > count(before, "PermissionRequest")
 }

@@ -25,9 +25,9 @@ edit again, and Claude Code shows you the diff in its own edit prompt. Choosing
 
 ![In Claude Code, lock refuses the first edit, the agent asks the user, and the retried edit opens Claude Code's edit prompt with the diff](/lock/approve-in-chat.svg)
 
-This works in the Manual, Accept edits, and Auto permission modes. In Bypass
-permissions mode, Claude Code shows no prompt, so `lock` refuses the edit instead
-and you approve it in your terminal.
+This works in the Manual and Accept edits permission modes. In Auto or Bypass
+permissions mode, Claude Code may answer a hook prompt without showing it to you,
+so `lock` refuses the edit instead and you approve it in your terminal.
 
 ### In your terminal
 

@@ -62,6 +62,8 @@ expect "write whole file over region" deny "$(j '{"cwd":"ROOT","tool_name":"Writ
 expect "multiedit touching region" deny "$(j '{"cwd":"ROOT","tool_name":"MultiEdit","tool_input":{"file_path":"ROOT/src/app.ts","edits":[{"old_string":"free = 1","new_string":"free = 3"},{"old_string":"ship.","new_string":"pay."}]}}')"
 expect "whole-file lock write" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/catalog.json","content":"{}"}}')"
 expect "write approval record" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.locks/approvals/x.json","content":"{}"}}')"
+expect "edit git hooks is denied" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.git/hooks/pre-commit","content":"exit 0"}}')"
+expect "edit git lock state is denied" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.git/lock/pending/x.json","content":"{}"}}')"
 expect "add file lock" allow "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.locks/files.json","content":"{ \u0022files\u0022: [\u0022catalog.json\u0022\u002c \u0022other.json\u0022] }"}}')"
 expect "drop file lock" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.locks/files.json","content":"{ \u0022files\u0022: [] }"}}')"
 expect "new lock added by agent" allow "$(j '{"cwd":"ROOT","tool_name":"Edit","tool_input":{"file_path":"ROOT/src/app.ts","old_string":"export const free = 1;","new_string":"// LOCKED: free START\nexport const free = 1;\n// LOCKED: free END"}}')"
@@ -72,6 +74,20 @@ expect "shell approve" deny "$(j '{"cwd":"ROOT","tool_name":"Bash","tool_input":
 expect "shell uninstall" deny "$(j '{"cwd":"ROOT","tool_name":"Bash","tool_input":{"command":"lock uninstall"}}')"
 expect "shell command runs" allow "$(j '{"cwd":"ROOT","tool_name":"Bash","tool_input":{"command":"echo x > CHANGELOG.md"}}')"
 expect "remove lock hook from settings" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"ROOT/.claude/settings.json","content":"{\u0022disableAllHooks\u0022: true}"}}')"
+expect "auto mode does not open an agent-answerable prompt" deny "$(j '{"cwd":"ROOT","permission_mode":"auto","tool_name":"Edit","tool_input":{"file_path":"ROOT/src/app.ts","old_string":"Pay for what you ship.","new_string":"Ship."}}')"
+mkdir -p sub
+git init -q sub
+expect "nested repository cwd still checks outer lock" deny "$(j '{"cwd":"ROOT/sub","tool_name":"Edit","tool_input":{"file_path":"ROOT/src/app.ts","old_string":"Pay for what you ship.","new_string":"Ship."}}')"
+nested_edit() { printf '{"cwd":"%s/sub","session_id":"nested","permission_mode":"default","hook_event_name":"PreToolUse","tool_use_id":"nested-1","tool_name":"Edit","tool_input":{"file_path":"%s/src/app.ts","old_string":"Pay for what you ship.","new_string":"Nested."}}' "$ROOT" "$ROOT" | "$LOCK" hook claude; }
+out="$(nested_edit)"
+case "$out" in *"retry the same edit"*) pass=$((pass+1)); echo "ok   nested repository keeps the first refusal";; *) fail=$((fail+1)); echo "FAIL nested repository keeps the first refusal $out";; esac
+out="$(nested_edit)"
+case "$out" in *"ask"*) pass=$((pass+1)); echo "ok   nested repository keeps in-chat approval";; *) fail=$((fail+1)); echo "FAIL nested repository keeps in-chat approval $out";; esac
+printf '{"cwd":"%s/sub","session_id":"nested-probe","hook_event_name":"PreToolUse","tool_name":"mcp__files__probe","tool_input":{}}' "$ROOT" | "$LOCK" hook claude >/dev/null
+edit 's/Pay for what you ship\./Nested probe./' src/app.ts
+out="$(printf '{"cwd":"%s/sub","session_id":"nested-probe","hook_event_name":"PostToolUse","tool_name":"mcp__files__probe","tool_input":{}}' "$ROOT" | "$LOCK" hook claude)"
+if grep -q "Pay for what you ship." src/app.ts && case "$out" in *"put it back"*) true;; *) false;; esac; then pass=$((pass+1)); echo "ok   nested repository snapshots unknown tools"; else fail=$((fail+1)); echo "FAIL nested repository snapshots unknown tools $out"; fi
+rm -rf sub
 expect "patch on locked file" deny "$(j '{"cwd":"ROOT","tool_name":"ApplyPatch","tool_input":{"patch":"*** Begin Patch\n*** Update File: src/app.ts\n@@\n-a\n+b\n*** End Patch"}}')"
 
 # Codex shapes: patches are replayed, so a patch outside a region passes.
@@ -122,6 +138,7 @@ hook() { printf '{"cwd":"%s","session_id":"s1","hook_event_name":"%s","tool_name
 agent() { out="$(hook PreToolUse "$1")"; [ -z "$out" ] || return 1; sh -c "$1" >/dev/null 2>&1; out="$(hook PostToolUse "$1")"; }
 "$LOCK" install >/dev/null; git add -A; git commit -qm hooks
 "$LOCK" doctor >/dev/null 2>&1 && { pass=$((pass+1)); echo "ok   doctor passes after install"; } || { fail=$((fail+1)); echo "FAIL doctor passes after install"; }
+check "failure event only for hosts that have it" 'grep -q PostToolUseFailure .claude/settings.json && ! grep -q PostToolUseFailure .codex/hooks.json && grep -q postToolUseFailure .cursor/hooks.json'
 mkdir -p tools
 cat > tools/rewrite.sh <<'EOF'
 perl -pi -e 's/"Ship\."/"Ship again."/; s/free = 1/free = 5/' src/app.ts
@@ -180,6 +197,19 @@ out="$(tool PreToolUse)"
 edit 's/tagline = "[^"]*"/tagline = "From MCP."/' src/app.ts
 out="$(tool PostToolUse)"
 check "an MCP tool's change to locked text is put back" '! grep -q "From MCP." src/app.ts && case "$out" in *"put it back"*) true;; *) false;; esac'
+tool_failure() { printf '{"cwd":"%s","session_id":"s5","hook_event_name":"%s","tool_name":"mcp__files__write","tool_use_id":"f1","tool_input":{"note":"x"}}' "$ROOT" "$1" | "$LOCK" hook claude; }
+tool_failure PreToolUse >/dev/null
+edit 's/tagline = "[^"]*"/tagline = "Failed command."/' src/app.ts
+out="$(tool_failure PostToolUseFailure)"
+check "a failed tool's change is put back" '! grep -q "Failed command." src/app.ts && case "$out" in *"put it back"*) true;; *) false;; esac'
+# A host without call ids runs the same command again after one that never reached
+# its after-check. The new snapshot must not take the earlier change as its baseline.
+orphan() { printf '{"cwd":"%s","session_id":"s7","hook_event_name":"%s","tool_name":"Bash","tool_input":{"command":"sh tools/orphan.sh"}}' "$ROOT" "$1" | "$LOCK" hook claude; }
+orphan PreToolUse >/dev/null
+edit 's/tagline = "[^"]*"/tagline = "Orphaned."/' src/app.ts
+orphan PreToolUse >/dev/null 2>&1
+orphan PostToolUse >/dev/null
+check "a repeated command does not adopt an earlier unchecked change" '! grep -q "Orphaned." src/app.ts'
 
 # A command that runs in the background is checked when the turn ends.
 bg() { printf '{"cwd":"%s","session_id":"s4","hook_event_name":"%s","tool_name":"Bash","tool_input":{"command":"sh tools/cursor.sh","run_in_background":true}}' "$ROOT" "$1" | "$LOCK" hook claude; }
@@ -188,6 +218,17 @@ out="$(bg PostToolUse)"
 edit 's/tagline = "[^"]*"/tagline = "Background."/' src/app.ts
 stop="$(printf '{"cwd":"%s","session_id":"s4","hook_event_name":"Stop"}' "$ROOT" | "$LOCK" hook claude 2>/dev/null)"
 check "a background command is checked when the turn ends" '[ -z "$out" ] && ! grep -q "Background." src/app.ts && case "$stop" in *systemMessage*"put it back"*) true;; *) false;; esac'
+# A later command in the same session must not drop a running background command's
+# snapshot, or the background command's later changes would go unchecked.
+bg6() { printf '{"cwd":"%s","session_id":"s6","hook_event_name":"%s","tool_name":"Bash","tool_input":{"command":"sh tools/cursor.sh","run_in_background":true}}' "$ROOT" "$1" | "$LOCK" hook claude; }
+fg6() { printf '{"cwd":"%s","session_id":"s6","hook_event_name":"%s","tool_name":"Bash","tool_input":{"command":"true"}}' "$ROOT" "$1" | "$LOCK" hook claude; }
+bg6 PreToolUse >/dev/null
+bg6 PostToolUse >/dev/null
+fg6 PreToolUse >/dev/null
+fg6 PostToolUse >/dev/null
+edit 's/tagline = "[^"]*"/tagline = "Background later."/' src/app.ts
+stop="$(printf '{"cwd":"%s","session_id":"s6","hook_event_name":"Stop"}' "$ROOT" | "$LOCK" hook claude 2>/dev/null)"
+check "a later command keeps a background command's snapshot" '! grep -q "Background later." src/app.ts && case "$stop" in *"put it back"*) true;; *) false;; esac'
 
 # Settings that decide whether lock runs: agent settings at home, and core.hooksPath.
 mkdir -p "$CLAUDE_CONFIG_DIR"
@@ -195,7 +236,7 @@ CFG="$(cd "$CLAUDE_CONFIG_DIR" && (pwd -W 2>/dev/null || pwd))"
 expect "agent cannot turn Claude Code hooks off in user settings" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"'"$CFG"'/settings.json","content":"{\u0022disableAllHooks\u0022: true}"}}')"
 mkdir -p "$CODEX_HOME"; CDX="$(cd "$CODEX_HOME" && (pwd -W 2>/dev/null || pwd))"
 expect "agent cannot turn Codex hooks off" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"'"$CDX"'/config.toml","content":"[features]\nhooks = false\n"}}')"
-expect "agent may change other Codex settings" allow "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"'"$CDX"'/config.toml","content":"model = 1\n"}}')"
+expect "agent cannot change Codex settings" deny "$(j '{"cwd":"ROOT","tool_name":"Write","tool_input":{"file_path":"'"$CDX"'/config.toml","content":"model = 1\n"}}')"
 expect "agent cannot move the git hooks by editing .git/config" deny "$(j '{"cwd":"ROOT","tool_name":"Edit","tool_input":{"file_path":"ROOT/.git/config","old_string":"[core]","new_string":"[core]\n\thooksPath = /dev/null"}}')"
 agent "git config core.hooksPath /dev/null"
 check "a command that moves the git hooks is undone" '[ -z "$(git config --local --get core.hooksPath)" ] && case "$out" in *core.hooksPath*) true;; *) false;; esac'

@@ -39,6 +39,20 @@ fn current(root: &Path, path: &str, id: &str) -> Option<String> {
 fn candidates(root: &Path) -> Result<Vec<Candidate>, String> {
     let mut found = Vec::new();
     for item in pending::list(root) {
+        if item
+            .before
+            .as_ref()
+            .map(|_| hash(item.before_text.as_bytes()))
+            != item.before
+            || item
+                .after
+                .as_ref()
+                .map(|_| hash(item.after_text.as_bytes()))
+                != item.after
+        {
+            let _ = fs::remove_file(&item.file);
+            continue;
+        }
         if current(root, &item.path, &item.id) != item.before {
             // The lock moved on since the agent proposed this; the proposal is stale.
             let _ = fs::remove_file(&item.file);

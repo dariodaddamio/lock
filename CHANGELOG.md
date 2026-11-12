@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+- An edit tool can no longer replace the commit hook or write lock's own state.
+  Before, an agent could use Write to turn `.git/hooks/pre-commit` into `exit 0`, and
+  only shell commands were undone, so the commit check silently stopped running.
+  Edit tools are now refused for `.git/hooks`, the resolved `core.hooksPath`, and
+  `.git/lock`, including through worktrees, symlinks, and `..`
+  (GHSA-c27m-6526-rg4f).
+- `lock approve` now shows exactly what it approves. It used to display the text
+  stored in a pending record but record a separate hash from the same file, so a
+  forged record could show a harmless diff while approving a different change. Each
+  record's text is now hashed again on load, and a record whose text and hash
+  disagree is dropped (GHSA-52p5-gr35-gwcg).
+- An edit sent from inside a nested repository or submodule is now checked against
+  the outer repository too. lock used to judge an edit only by the repository of
+  the agent's working directory, so an edit to a locked file in the outer
+  repository was allowed. It now checks the target file's own repository and every
+  repository that encloses it, with the full flow (refusal, in-chat approval, and
+  snapshots) in each (GHSA-4wh2-7r58-rg32).
+- A hook that hangs now blocks the tool call instead of letting it run. Hosts treat
+  a hook that times out as a non-blocking error, so a hung `git` call failed open.
+  A 20-second watchdog now answers with a refusal before the host gives up. It is
+  armed only before a tool runs, where refusing is safe and nothing has been put
+  back yet (GHSA-8fjv-27gv-5754).
+- A `.gitattributes` change can no longer hide locked files from the shell check.
+  lock found marked files with `git grep -I`, which skips files that git treats as
+  binary, so `*.ts -diff` dropped every locked `.ts` file from the snapshot. The
+  snapshot now searches without `-I` and takes the files from the worktree, the
+  index, and HEAD together (GHSA-vjh5-qxfr-f5mr).
+- In-chat approval is turned off in Claude Code's Auto permission mode, because the
+  auto-mode classifier may answer the prompt without showing it to you, and lock
+  would have recorded that as your approval. In Auto mode lock refuses the edit
+  and you approve it with `lock approve` in your terminal (GHSA-g8jm-gmmr-hqcr).
+- Shell commands that fail, time out, or are interrupted are now checked. Claude
+  Code and Cursor report a failed call as `PostToolUseFailure`, which lock did not
+  listen to, and the Stop hook deleted the leftover snapshots without checking
+  them. lock now checks failure events, checks every snapshot of the session at
+  Stop, and checks an earlier snapshot of the same command before it is replaced.
+  Codex has no failure event, so its hook file is unchanged and its failed commands
+  are checked at Stop. Run `lock install` again to add the new Claude Code and
+  Cursor hook entries (GHSA-m72r-gjm9-c2jc).
+- Agent edits to host settings and hook files are now refused by default. lock used
+  to block a list of known-bad keys, which could never be complete, so a setting
+  such as `env.PATH` could put a fake `lock` in front of the real one. Now only
+  changes to `permissions` entries in `.claude/settings.json` are allowed, and
+  everything else needs you (GHSA-xcqv-xx5x-95p5).
+
 - Known read-only tools (Read, Grep, Glob, and the other exact names on the safe
   list) pass without a snapshot again. That restores the speed the README describes,
   and stops a parallel Read from putting an in-chat approved edit back before the

@@ -116,12 +116,21 @@ fn agent(root: &Path, host: &str) -> Result<String, String> {
     .into_iter()
     .find(|(name, _)| *name == host)
     .ok_or_else(|| format!("unknown agent: {host}"))?;
-    agent_hooks(
-        root,
-        file,
-        &[("PreToolUse", None), ("PostToolUse", None), ("Stop", None)],
-        host,
-    )
+    // Claude Code reports a failed tool call as PostToolUseFailure instead of
+    // PostToolUse, so lock checks those too. Codex has no such event, and its hook file
+    // stays unchanged, because Codex stops running hooks that changed until a person
+    // trusts them again. Its failed commands are checked at Stop.
+    let events: &[(&str, Option<&str>)] = if host == "claude" {
+        &[
+            ("PreToolUse", None),
+            ("PostToolUse", None),
+            ("PostToolUseFailure", None),
+            ("Stop", None),
+        ]
+    } else {
+        &[("PreToolUse", None), ("PostToolUse", None), ("Stop", None)]
+    };
+    agent_hooks(root, file, events, host)
 }
 
 fn cursor(root: &Path) -> Result<String, String> {
@@ -137,6 +146,7 @@ fn cursor(root: &Path) -> Result<String, String> {
         ("preToolUse", true),
         ("beforeShellExecution", true),
         ("postToolUse", false),
+        ("postToolUseFailure", false),
         ("stop", false),
     ] {
         let list = hooks
