@@ -22,12 +22,40 @@ use crate::repo::{
 };
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// A copy older than this belongs to a command that never reported back.
 const STALE_SECONDS: u64 = 6 * 60 * 60;
 const MANIFEST: &str = "manifest.json";
+
+/// Held for one hook transaction, including approval recording and snapshot cleanup.
+/// The OS releases it on process exit; never unlink this shared coordination file.
+pub fn synchronize(root: &Path) -> Result<File, String> {
+    let directory = git_dir(root).join("lock");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join("watch.lock"))
+        .map_err(|error| format!("could not open snapshot coordination: {error}"))?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match fs2::FileExt::try_lock_exclusive(&file) {
+            Ok(()) => return Ok(file),
+            Err(error)
+                if error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+                    && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(format!("could not synchronize locked snapshots: {error}")),
+        }
+    }
+}
 
 fn runs(root: &Path) -> PathBuf {
     git_dir(root).join("lock").join("runs")
@@ -424,8 +452,9 @@ pub fn after(root: &Path, session: &str, command: &str) -> Result<Option<String>
         Err(error) => recover_deleted(root).map(|message| {
             Some(format!(
                 "{}\n\nlock could not read its snapshot: {error}",
-                message
-                    .unwrap_or_else(|| "lock restored the locked text to the last commit".into())
+                message.unwrap_or_else(|| {
+                    "lock could not verify this call against its original snapshot".into()
+                })
             ))
         }),
         other => other,

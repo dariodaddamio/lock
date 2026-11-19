@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Codex code mode is now checked. Codex 0.170 runs tool calls through its `exec`
+  tool as JavaScript, so an edit arrives as `tools.apply_patch("…")` inside a
+  script. lock treated `exec` as a shell command but read only `command`, found
+  none, and allowed the call without a snapshot, so a locked file could be changed
+  and stay changed. lock now reads the script's patches and refuses those that touch
+  locked text. A shell tool whose command lock cannot read is snapshotted and
+  checked by what it changed, like any other unknown tool.
+- A patch addressed by an absolute path, or one launched from outside the
+  repository, is now traced to the repository it edits. Duplicate hook
+  registrations that a host runs at the same time now take turns on each
+  repository, so one can no longer replace or delete another's snapshot.
+
 ## 0.3.3 - November 12, 2026
 
 - An edit tool can no longer replace the commit hook or write lock's own state.

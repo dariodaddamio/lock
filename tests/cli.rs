@@ -247,6 +247,8 @@ fn lock_at_home(dir: &Path, home: &Path, path: &std::ffi::OsStr) -> Output {
         .env("PATH", path)
         .env("HOME", home)
         .env("USERPROFILE", home)
+        .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
+        .env("CODEX_HOME", home.join(".codex"))
         .env_remove("CI")
         .output()
         .unwrap()
