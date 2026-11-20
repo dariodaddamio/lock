@@ -9,6 +9,9 @@
   and stay changed. lock now reads the script's patches and refuses those that touch
   locked text. A shell tool whose command lock cannot read is snapshotted and
   checked by what it changed, like any other unknown tool.
+- A file that only mentions `LOCKED:`, for example inside a string literal, no longer counts
+  as holding a lock. Before, any edit to such a file that lock could not replay exactly was
+  refused. Only real marker lines lock text, and a broken marker structure still does.
 - A patch addressed by an absolute path, or one launched from outside the
   repository, is now traced to the repository it edits. Duplicate hook
   registrations that a host runs at the same time now take turns on each

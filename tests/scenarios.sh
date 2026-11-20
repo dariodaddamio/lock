@@ -38,6 +38,8 @@ export const tagline = "Pay for what you ship.";
 /* LOCKED: tagline END */
 EOF
 echo '{"name":"catalog"}' > catalog.json
+# A marker mentioned inside a string literal is not a lock.
+printf '%s\n' 'export const probe = "a\n/* LOCKED: probe START */\nb";' 'export const other = 1;' > src/mention.ts
 mkdir -p .locks; echo '{ "files": ["catalog.json"] }' > .locks/files.json
 git add -A; git commit -qm init
 
@@ -97,6 +99,7 @@ expect "codex patch deletes locked file" deny "$(j '{"cwd":"ROOT/..","tool_name"
 expect "codex shell apply_patch" deny "$(j '{"cwd":"ROOT/..","tool_name":"shell","tool_input":{"workdir":"ROOT","command":["bash","-lc","apply_patch <<EOF\n*** Begin Patch\n*** Update File: CHANGELOG.md\n@@\n-Initial release.\n+Changed.\n*** End Patch\nEOF"]}}')"
 expect "codex code-mode exec patch inside region" deny "$(j '{"cwd":"ROOT","tool_name":"exec","tool_input":"const r = await tools.apply_patch(\"*** Begin Patch\n*** Update File: CHANGELOG.md\n@@\n-Initial release.\n+Changed.\n*** End Patch\");\ntext(r);"}')"
 expect "codex code-mode exec patch outside region" allow "$(j '{"cwd":"ROOT","tool_name":"exec","tool_input":{"input":"await tools.apply_patch(\"*** Begin Patch\n*** Update File: src/app.ts\n@@\n-export const free = 1;\n+export const free = 9;\n*** End Patch\");"}}')"
+expect "marker text in a string locks nothing" allow "$(j '{"cwd":"ROOT","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Update File: src/mention.ts\n@@\n-export const other = 2;\n+export const other = 3;\n*** End Patch"}}')"
 expect "codex shell array runs" allow "$(j '{"cwd":"ROOT","tool_name":"exec_command","tool_input":{"cmd":["sed","-i","s/Pay/Ship/","src/app.ts"]}}')"
 
 # Cursor shapes
