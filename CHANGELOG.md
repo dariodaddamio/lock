@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.4 - November 19, 2026
 
 - Codex code mode is now checked. Codex 0.170 runs tool calls through its `exec`
   tool as JavaScript, so an edit arrives as `tools.apply_patch("…")` inside a
