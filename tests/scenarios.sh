@@ -95,6 +95,8 @@ expect "codex patch outside region" allow "$(j '{"cwd":"ROOT/..","tool_name":"ap
 expect "codex patch inside region" deny "$(j '{"cwd":"ROOT/..","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Update File: ROOT/src/app.ts\n@@\n /* LOCKED: tagline START */\n-export const tagline = \"Pay for what you ship.\";\n+export const tagline = \"Ship.\";\n*** End Patch"}}')"
 expect "codex patch deletes locked file" deny "$(j '{"cwd":"ROOT/..","tool_name":"apply_patch","tool_input":{"workdir":"ROOT","command":"*** Begin Patch\n*** Delete File: CHANGELOG.md\n*** End Patch"}}')"
 expect "codex shell apply_patch" deny "$(j '{"cwd":"ROOT/..","tool_name":"shell","tool_input":{"workdir":"ROOT","command":["bash","-lc","apply_patch <<EOF\n*** Begin Patch\n*** Update File: CHANGELOG.md\n@@\n-Initial release.\n+Changed.\n*** End Patch\nEOF"]}}')"
+expect "codex code-mode exec patch inside region" deny "$(j '{"cwd":"ROOT","tool_name":"exec","tool_input":"const r = await tools.apply_patch(\"*** Begin Patch\n*** Update File: CHANGELOG.md\n@@\n-Initial release.\n+Changed.\n*** End Patch\");\ntext(r);"}')"
+expect "codex code-mode exec patch outside region" allow "$(j '{"cwd":"ROOT","tool_name":"exec","tool_input":{"input":"await tools.apply_patch(\"*** Begin Patch\n*** Update File: src/app.ts\n@@\n-export const free = 1;\n+export const free = 9;\n*** End Patch\");"}}')"
 expect "codex shell array runs" allow "$(j '{"cwd":"ROOT","tool_name":"exec_command","tool_input":{"cmd":["sed","-i","s/Pay/Ship/","src/app.ts"]}}')"
 
 # Cursor shapes
