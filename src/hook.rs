@@ -1187,7 +1187,12 @@ fn judge(root: &Path, protected: &[PathBuf], change: &Change) -> Result<Option<R
     let whole_file = parse_file_locks(fs::read(root.join(FILE_LOCKS)).ok().as_deref())?
         .iter()
         .any(|locked| eq(locked, path));
-    let marked = supports_markers(path) && before.is_some_and(|text| text.contains("LOCKED:"));
+    // A file is marked only when it holds marker lines. A mention of `LOCKED:` elsewhere, such
+    // as inside a string literal, locks nothing; a broken marker structure still counts.
+    let marked = supports_markers(path)
+        && before.is_some_and(|text| {
+            text.contains("LOCKED:") && regions(path, text).map_or(true, |found| !found.is_empty())
+        });
     if !whole_file && !marked {
         return Ok(None);
     }
