@@ -59,6 +59,16 @@ check them: it prints a PASS, WARN, or FAIL line for each part of the setup and 
 to fix it. A missing hook file for an agent that you use is a FAIL. If the hook files are in `.gitignore`, `lock install` and `lock doctor`
 warn you, because teammates do not get files that git ignores.
 
+The generated hook may also be registered in a provider's user configuration
+(`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or the user's `.cursor` folder). `lock doctor`
+checks those applicable files when a repository registration is absent and shows
+the exact path. A PASS confirms the registration is present; it does not replace
+the provider's own trust or approval step.
+
+Lock coordinates concurrent hooks per repository using an operating-system file lock.
+This keeps duplicate registrations from replacing or deleting each other's snapshots.
+The operating system releases the coordination lock when the hook process exits.
+
 ## Documentation
 
 - [Using lock](https://dariodaddamio.github.io/lock/using/) — day-to-day decisions and approvals.

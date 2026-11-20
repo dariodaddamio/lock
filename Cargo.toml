@@ -18,6 +18,8 @@ name = "lock"
 path = "src/main.rs"
 
 [dependencies]
+# OS-backed snapshot coordination while retaining the Rust 1.88 minimum.
+fs2 = "0.4.3"
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 

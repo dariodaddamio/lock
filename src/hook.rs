@@ -270,8 +270,12 @@ fn command_text(value: &Value) -> Option<String> {
 }
 
 pub(crate) fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
+    let input = payload
+        .get("tool_input")
+        .or_else(|| payload.get("arguments"))
+        .unwrap_or(&Value::Null);
     // Cursor sends an empty `cwd` with shell commands, so an empty one means none.
-    let cwd = text(payload, &["cwd"])
+    let launch_cwd = text(payload, &["cwd"])
         .filter(|cwd| !cwd.is_empty())
         .map(PathBuf::from)
         .or_else(|| {
@@ -284,41 +288,54 @@ pub(crate) fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
         })
         .or_else(|| std::env::current_dir().ok())
         .ok_or("no working directory")?;
-    let mut roots = enclosing_roots(&cwd);
-    let target = payload
-        .get("tool_input")
-        .or_else(|| payload.get("arguments"))
-        .and_then(|input| {
-            text(
-                input,
-                &[
-                    "file_path",
-                    "filePath",
-                    "path",
-                    "target_file",
-                    "targetFile",
-                    "notebook_path",
-                ],
-            )
-            .or_else(|| {
-                text(
-                    payload,
-                    &[
-                        "file_path",
-                        "filePath",
-                        "path",
-                        "target_file",
-                        "targetFile",
-                        "notebook_path",
-                    ],
-                )
-            })
-        });
-    if let Some(target) = target {
-        let full = if Path::new(target).is_absolute() {
-            PathBuf::from(target)
+    let cwd = text(input, &["workdir", "working_directory", "cwd"])
+        .filter(|value| !value.is_empty())
+        .map(|value| launch_cwd.join(value))
+        .unwrap_or_else(|| launch_cwd.clone());
+    let shell_command = command_text(input).or_else(|| command_text(payload));
+    let script = shell_command
+        .is_none()
+        .then(|| code_mode_script(payload, input))
+        .flatten();
+    // Patches that ride inside a shell command or a code-mode script.
+    let inline_patches: Vec<String> = match &script {
+        Some(script) => script.patches.clone(),
+        None => shell_command
+            .as_deref()
+            .and_then(embedded_patch)
+            .map(str::to_owned)
+            .into_iter()
+            .collect(),
+    };
+    let command = shell_command.or_else(|| script.map(|script| script.source));
+    let mut roots = enclosing_roots(&launch_cwd);
+    roots.extend(enclosing_roots(&cwd));
+    let keys = [
+        "file_path",
+        "filePath",
+        "path",
+        "target_file",
+        "targetFile",
+        "notebook_path",
+    ];
+    let mut targets: Vec<String> = text(input, &keys)
+        .or_else(|| text(payload, &keys))
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    // Discover the patch's repositories before deciding that a home-launched call
+    // has no repository. A single patch may cross several independent roots.
+    if let Some(patch) = patch_input(input).or_else(|| patch_input(payload)) {
+        targets.extend(patch_paths(patch));
+    }
+    for patch in &inline_patches {
+        targets.extend(patch_paths(patch));
+    }
+    for target in targets {
+        let full = if Path::new(&target).is_absolute() {
+            PathBuf::from(&target)
         } else {
-            cwd.join(target)
+            cwd.join(&target)
         };
         roots.extend(enclosing_roots(full.parent().unwrap_or(&full)));
     }
@@ -333,7 +350,6 @@ pub(crate) fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
     let Some(root) = roots.first().cloned().or_else(|| find_root(&cwd)) else {
         return Ok(Outcome::Allow);
     };
-    let protected = protected_dirs(&root);
     let event = text(payload, &["hook_event_name", "hookEventName"])
         .unwrap_or("PreToolUse")
         .to_ascii_lowercase();
@@ -343,14 +359,22 @@ pub(crate) fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
         .unwrap_or_default()
         .to_ascii_lowercase();
     let tool = tool.strip_prefix("functions.").unwrap_or(&tool).to_string();
-    let input = payload
-        .get("tool_input")
-        .or_else(|| payload.get("arguments"))
-        .unwrap_or(&Value::Null);
-    let command = command_text(input).or_else(|| command_text(payload));
     let is_shell = SHELL_TOOLS.contains(&tool.as_str()) || (input.is_null() && command.is_some());
     let background =
         tool == "monitor" || input.get("run_in_background") == Some(&Value::Bool(true));
+
+    if is_pre_event(payload) && SAFE_TOOLS.contains(&tool.as_str()) {
+        return Ok(Outcome::Allow);
+    }
+    // Providers can run duplicate registrations concurrently. Hold every affected
+    // root in a stable order until this event's reads, repairs and cleanup finish.
+    let mut coordinated_roots: Vec<_> = roots.iter().collect();
+    coordinated_roots.sort();
+    let _watch_guards: Vec<_> = coordinated_roots
+        .into_iter()
+        .map(|root| watch::synchronize(root))
+        .collect::<Result<_, _>>()?;
+    let protected = protected_dirs(&root);
 
     match event.as_str() {
         "stop" | "sessionend" => {
@@ -437,6 +461,12 @@ pub(crate) fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
 
     let changes = if is_shell {
         let Some(command) = command else {
+            // A shell tool whose command lock cannot read is checked by what it changed.
+            let key = other_key(&tool, call, input);
+            for candidate in &roots {
+                warn_unsupported(candidate);
+                watch::before(candidate, session, &key, background)?;
+            }
             return Ok(Outcome::Allow);
         };
         if let Some(reason) = shell::denial(&command) {
@@ -445,14 +475,10 @@ pub(crate) fn decide(host: Host, payload: &Value) -> Result<Outcome, String> {
         let mut refusals = Vec::new();
         for candidate in &roots {
             let protected = protected_dirs(candidate);
-            let candidate_changes = if command.find("*** Begin Patch").is_some() {
-                let start = command.find("*** Begin Patch").unwrap();
-                let body = &command[start..];
-                let end = body.find("*** End Patch").map_or(body.len(), |at| at + 13);
-                patch_changes(candidate, &cwd, &body[..end])
-            } else {
-                Vec::new()
-            };
+            let candidate_changes: Vec<Change> = inline_patches
+                .iter()
+                .flat_map(|patch| patch_changes(candidate, &cwd, patch))
+                .collect();
             refusals.extend(judge_all(candidate, &protected, &candidate_changes)?);
         }
         if !refusals.is_empty() {
@@ -840,6 +866,130 @@ fn looks_like_patch(text: &str) -> bool {
         || (text.contains("\n+++ ") && text.starts_with("--- "))
 }
 
+fn patch_input(value: &Value) -> Option<&str> {
+    value
+        .as_str()
+        .or_else(|| {
+            text(
+                value,
+                &[
+                    "patch",
+                    "patchText",
+                    "diff",
+                    "input",
+                    "raw",
+                    "command",
+                    "cmd",
+                ],
+            )
+        })
+        .filter(|body| looks_like_patch(body))
+}
+
+fn embedded_patch(command: &str) -> Option<&str> {
+    let body = &command[command.find("*** Begin Patch")?..];
+    let end = body.find("*** End Patch").map_or(body.len(), |at| at + 13);
+    Some(&body[..end])
+}
+
+/// A Codex code-mode script. Codex runs tool calls through its `exec` tool as
+/// JavaScript, so an edit arrives as `tools.apply_patch("…")` inside the script.
+struct Script {
+    source: String,
+    patches: Vec<String>,
+}
+
+fn code_mode_script(payload: &Value, input: &Value) -> Option<Script> {
+    let tool = text(payload, &["tool_name", "toolName"])?.to_ascii_lowercase();
+    if tool.strip_prefix("functions.").unwrap_or(&tool) != "exec" {
+        return None;
+    }
+    let source = input
+        .as_str()
+        .or_else(|| text(input, &["input", "code", "source", "script"]))?
+        .to_string();
+    let patches = string_literals(&source)
+        .iter()
+        .filter_map(|literal| embedded_patch(literal))
+        .map(str::to_owned)
+        .collect();
+    Some(Script { source, patches })
+}
+
+/// The decoded string literals of a JavaScript source. Template substitutions stay as
+/// written. A script that lock misreads is still checked by what it changed.
+fn string_literals(source: &str) -> Vec<String> {
+    let mut literals = Vec::new();
+    let mut chars = source.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '/' if chars.peek() == Some(&'/') => {
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut star = false;
+                for c in chars.by_ref() {
+                    if star && c == '/' {
+                        break;
+                    }
+                    star = c == '*';
+                }
+            }
+            '"' | '\'' | '`' => {
+                let quote = c;
+                let mut literal = String::new();
+                while let Some(c) = chars.next() {
+                    if c == quote {
+                        break;
+                    }
+                    if c != '\\' {
+                        literal.push(c);
+                        continue;
+                    }
+                    let escaped = match chars.next() {
+                        Some('n') => Some('\n'),
+                        Some('r') => Some('\r'),
+                        Some('t') => Some('\t'),
+                        Some('0') => Some('\0'),
+                        Some('x') => {
+                            let hex: String = chars.by_ref().take(2).collect();
+                            u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
+                        }
+                        Some('u') => {
+                            let hex: String = if chars.peek() == Some(&'{') {
+                                chars.next();
+                                chars.by_ref().take_while(|c| *c != '}').collect()
+                            } else {
+                                chars.by_ref().take(4).collect()
+                            };
+                            u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
+                        }
+                        // A backslash before a line break continues the literal.
+                        Some('\n') => None,
+                        Some('\r') => {
+                            if chars.peek() == Some(&'\n') {
+                                chars.next();
+                            }
+                            None
+                        }
+                        Some(other) => Some(other),
+                        None => break,
+                    };
+                    literal.extend(escaped);
+                }
+                literals.push(literal);
+            }
+            _ => {}
+        }
+    }
+    literals
+}
+
 /// Every file a patch touches. A Codex patch that applies exactly is replayed; any
 /// other patch leaves its files unknown, which blocks it only on locked files.
 fn patch_changes(root: &Path, cwd: &Path, patch: &str) -> Vec<Change> {
@@ -878,15 +1028,7 @@ fn proposals(
     input: &Value,
     payload: &Value,
 ) -> Result<Vec<Change>, String> {
-    let patch = input
-        .as_str()
-        .or_else(|| {
-            text(
-                input,
-                &["patch", "patchText", "diff", "input", "raw", "command"],
-            )
-        })
-        .filter(|body| looks_like_patch(body));
+    let patch = patch_input(input);
     if let Some(patch) = patch {
         return Ok(patch_changes(root, cwd, patch));
     }

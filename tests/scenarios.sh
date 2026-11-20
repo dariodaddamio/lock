@@ -91,10 +91,12 @@ rm -rf sub
 expect "patch on locked file" deny "$(j '{"cwd":"ROOT","tool_name":"ApplyPatch","tool_input":{"patch":"*** Begin Patch\n*** Update File: src/app.ts\n@@\n-a\n+b\n*** End Patch"}}')"
 
 # Codex shapes: patches are replayed, so a patch outside a region passes.
-expect "codex patch outside region" allow "$(j '{"cwd":"ROOT","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Update File: src/app.ts\n@@\n-export const free = 1;\n+export const free = 9;\n*** End Patch"}}')"
-expect "codex patch inside region" deny "$(j '{"cwd":"ROOT","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Update File: src/app.ts\n@@\n /* LOCKED: tagline START */\n-export const tagline = \"Pay for what you ship.\";\n+export const tagline = \"Ship.\";\n*** End Patch"}}')"
-expect "codex patch deletes locked file" deny "$(j '{"cwd":"ROOT","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Delete File: CHANGELOG.md\n*** End Patch"}}')"
-expect "codex shell apply_patch" deny "$(j '{"cwd":"ROOT","tool_name":"shell","tool_input":{"command":["bash","-lc","apply_patch <<EOF\n*** Begin Patch\n*** Update File: CHANGELOG.md\n@@\n-Initial release.\n+Changed.\n*** End Patch\nEOF"]}}')"
+expect "codex patch outside region" allow "$(j '{"cwd":"ROOT/..","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Update File: ROOT/src/app.ts\n@@\n-export const free = 1;\n+export const free = 9;\n*** End Patch"}}')"
+expect "codex patch inside region" deny "$(j '{"cwd":"ROOT/..","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Update File: ROOT/src/app.ts\n@@\n /* LOCKED: tagline START */\n-export const tagline = \"Pay for what you ship.\";\n+export const tagline = \"Ship.\";\n*** End Patch"}}')"
+expect "codex patch deletes locked file" deny "$(j '{"cwd":"ROOT/..","tool_name":"apply_patch","tool_input":{"workdir":"ROOT","command":"*** Begin Patch\n*** Delete File: CHANGELOG.md\n*** End Patch"}}')"
+expect "codex shell apply_patch" deny "$(j '{"cwd":"ROOT/..","tool_name":"shell","tool_input":{"workdir":"ROOT","command":["bash","-lc","apply_patch <<EOF\n*** Begin Patch\n*** Update File: CHANGELOG.md\n@@\n-Initial release.\n+Changed.\n*** End Patch\nEOF"]}}')"
+expect "codex code-mode exec patch inside region" deny "$(j '{"cwd":"ROOT","tool_name":"exec","tool_input":"const r = await tools.apply_patch(\"*** Begin Patch\n*** Update File: CHANGELOG.md\n@@\n-Initial release.\n+Changed.\n*** End Patch\");\ntext(r);"}')"
+expect "codex code-mode exec patch outside region" allow "$(j '{"cwd":"ROOT","tool_name":"exec","tool_input":{"input":"await tools.apply_patch(\"*** Begin Patch\n*** Update File: src/app.ts\n@@\n-export const free = 1;\n+export const free = 9;\n*** End Patch\");"}}')"
 expect "codex shell array runs" allow "$(j '{"cwd":"ROOT","tool_name":"exec_command","tool_input":{"cmd":["sed","-i","s/Pay/Ship/","src/app.ts"]}}')"
 
 # Cursor shapes
@@ -193,10 +195,17 @@ check "turn end clears the copies" '[ -z "$(ls "$(git rev-parse --git-dir)/lock/
 
 # Tools that lock cannot read, such as MCP tools, are checked by what they changed.
 tool() { printf '{"cwd":"%s","session_id":"s3","hook_event_name":"%s","tool_name":"mcp__files__write","tool_use_id":"m1","tool_input":{"note":"x"}}' "$ROOT" "$1" | "$LOCK" hook claude; }
-out="$(tool PreToolUse)"
+tool PreToolUse >"$WORK/duplicate-pre-a" & duplicate_a=$!
+tool PreToolUse >"$WORK/duplicate-pre-b" & duplicate_b=$!
+wait "$duplicate_a"; duplicate_pre_a=$?
+wait "$duplicate_b"; duplicate_pre_b=$?
 edit 's/tagline = "[^"]*"/tagline = "From MCP."/' src/app.ts
-out="$(tool PostToolUse)"
-check "an MCP tool's change to locked text is put back" '! grep -q "From MCP." src/app.ts && case "$out" in *"put it back"*) true;; *) false;; esac'
+tool PostToolUse >"$WORK/duplicate-post-a" & duplicate_a=$!
+tool PostToolUse >"$WORK/duplicate-post-b" & duplicate_b=$!
+wait "$duplicate_a"; duplicate_post_a=$?
+wait "$duplicate_b"; duplicate_post_b=$?
+out="$(cat "$WORK/duplicate-post-a" "$WORK/duplicate-post-b")"
+check "an MCP tool's change to locked text is put back" '[ "$duplicate_pre_a$duplicate_pre_b$duplicate_post_a$duplicate_post_b" = 0000 ] && ! grep -q "From MCP." src/app.ts && case "$out" in *"could not read its snapshot"*) false;; *"put it back"*) true;; *) false;; esac'
 tool_failure() { printf '{"cwd":"%s","session_id":"s5","hook_event_name":"%s","tool_name":"mcp__files__write","tool_use_id":"f1","tool_input":{"note":"x"}}' "$ROOT" "$1" | "$LOCK" hook claude; }
 tool_failure PreToolUse >/dev/null
 edit 's/tagline = "[^"]*"/tagline = "Failed command."/' src/app.ts

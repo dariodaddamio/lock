@@ -174,39 +174,85 @@ fn required_events(file: &str) -> &'static [&'static str] {
     }
 }
 
+/// The generated hook can be installed in an agent's user configuration instead of
+/// this repository. Keep these paths aligned with each provider's own HOME rules.
+fn home_agent_file(agent: &str) -> Option<PathBuf> {
+    match agent {
+        "Claude Code" => crate::guard::claude_dir().map(|dir| dir.join("settings.json")),
+        "Codex" => std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .or_else(|| std::env::var_os("USERPROFILE"))
+                    .map(|home| PathBuf::from(home).join(".codex"))
+            })
+            .map(|dir| dir.join("hooks.json")),
+        _ => std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(|home| PathBuf::from(home).join(".cursor/hooks.json")),
+    }
+}
+
+fn check_agent_file(path: &Path, agent: &str, file: &str, contract: &str) -> Result<(), Check> {
+    let bytes = fs::read(path).map_err(|_| {
+        Check::fail(
+            format!("{file} is missing, so {agent} is not guarded"),
+            format!("Run `lock install --{}`.", flag(agent)),
+        )
+    })?;
+    let settings = serde_json::from_slice::<Value>(&bytes).map_err(|_| {
+        Check::fail(
+            format!("{file} is not valid JSON"),
+            format!("Fix the file by hand, then run `lock install` to add the {agent} hook."),
+        )
+    })?;
+    let missing: Vec<&str> = required_events(contract)
+        .iter()
+        .copied()
+        .filter(|event| {
+            !settings
+                .pointer(&format!("/hooks/{event}"))
+                .is_some_and(mentions_lock)
+        })
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(Check::fail(
+            format!("{file} lacks the lock hook for: {}", missing.join(", ")),
+            format!("Run `lock install --{}` to add it.", flag(agent)),
+        ))
+    }
+}
+
 /// One check for each agent whose file exists, and a failure when no agent has one.
 fn agent_checks(root: &Path) -> Vec<Check> {
     let mut checks = Vec::new();
     let mut absent = Vec::new();
     for (agent, file) in AGENT_FILES {
-        let Ok(bytes) = fs::read(root.join(file)) else {
-            absent.push((agent, file));
+        let project = root.join(file);
+        if project.is_file() {
+            checks.push(match check_agent_file(&project, agent, file, file) {
+                Ok(()) => Check::pass(format!("{file} runs the lock hook for {agent}")),
+                Err(check) => check,
+            });
             continue;
-        };
-        let Ok(settings) = serde_json::from_slice::<Value>(&bytes) else {
-            checks.push(Check::fail(
-                format!("{file} is not valid JSON"),
-                format!("Fix the file by hand, then run `lock install` to add the {agent} hook."),
-            ));
+        }
+        if let Some(global) = home_agent_file(agent).filter(|path| path != &project)
+            && global.is_file()
+        {
+            checks.push(
+                match check_agent_file(&global, agent, &global.display().to_string(), file) {
+                    Ok(()) => Check::pass(format!(
+                        "{} runs the lock hook for {agent} (user config)",
+                        global.display()
+                    )),
+                    Err(check) => check,
+                },
+            );
             continue;
-        };
-        let missing: Vec<&str> = required_events(file)
-            .iter()
-            .copied()
-            .filter(|event| {
-                !settings
-                    .pointer(&format!("/hooks/{event}"))
-                    .is_some_and(mentions_lock)
-            })
-            .collect();
-        checks.push(if missing.is_empty() {
-            Check::pass(format!("{file} runs the lock hook for {agent}"))
-        } else {
-            Check::fail(
-                format!("{file} lacks the lock hook for: {}", missing.join(", ")),
-                "Run `lock install` to add it.",
-            )
-        });
+        }
+        absent.push((agent, file));
     }
     if absent.len() == AGENT_FILES.len() {
         checks.push(Check::fail(
